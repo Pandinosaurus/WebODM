@@ -9,9 +9,16 @@ import AssetDownloadButtons from './AssetDownloadButtons';
 import HistoryNav from '../classes/HistoryNav';
 import PropTypes from 'prop-types';
 import TaskPluginActionButtons from './TaskPluginActionButtons';
+import MoveTaskDialog from './MoveTaskDialog';
+import ManageMediaDialog from './ManageMediaDialog';
+import SplatsDialog from './SplatsDialog';
 import PipelineSteps from '../classes/PipelineSteps';
 import Css from '../classes/Css';
+import Tags from '../classes/Tags';
 import Trans from './Trans';
+import Utils from '../classes/Utils';
+import PdfPopup from './PdfPopup';
+import { unitSystem } from '../classes/Units';
 import { _, interpolate } from '../classes/gettext';
 
 class TaskListItem extends React.Component {
@@ -19,7 +26,12 @@ class TaskListItem extends React.Component {
       history: PropTypes.object.isRequired,
       data: PropTypes.object.isRequired, // task json
       refreshInterval: PropTypes.number, // how often to refresh info
-      onDelete: PropTypes.func
+      onDelete: PropTypes.func,
+      onMove: PropTypes.func,
+      onDuplicate: PropTypes.func,
+      hasPermission: PropTypes.func,
+      onEdited: PropTypes.func,
+      onTagClicked: PropTypes.func
   }
 
   constructor(props){
@@ -37,7 +49,14 @@ class TaskListItem extends React.Component {
       memoryError: false,
       friendlyTaskError: "",
       pluginActionButtons: [],
-      view: "basic"
+      view: "basic",
+      showMoveDialog: false,
+      actionLoading: false,
+      thumbLoadFailed: false,
+      displayPdf: false,
+      copiedToClipboard: false,
+      showMediaDialog: false,
+      showSplatsDialog: false,
     }
 
     for (let k in props.data){
@@ -69,10 +88,12 @@ class TaskListItem extends React.Component {
 
   loadTimer(startTime){
     if (!this.processingTimeInterval){
+      this._timerStart = new Date().getTime();
+
       this.setState({time: startTime});
 
       this.processingTimeInterval = setInterval(() => {
-        this.setState({time: this.state.time += 1000});
+        this.setState({time: ((new Date().getTime() - this._timerStart)) + startTime } );
       }, 1000);
     }
   }
@@ -127,8 +148,8 @@ class TaskListItem extends React.Component {
 
       this.setAutoRefresh();
     })
-    .fail(( _, __, errorThrown) => {
-      if (errorThrown === "Not Found"){ // Don't translate this one
+    .fail((result, __, errorThrown) => {
+      if (result.status === 404 || errorThrown === "Not Found"){ // Don't translate this one
         // Assume this has been deleted
         if (this.props.onDelete) this.props.onDelete(this.state.task.id);
       }else{
@@ -157,8 +178,24 @@ class TaskListItem extends React.Component {
     });
   }
 
-  consoleOutputUrl(line){
-    return `/api/projects/${this.state.task.project}/tasks/${this.state.task.id}/output/?line=${line}`;
+  consoleOutputUrl(line, download){
+    let url = `/api/projects/${this.state.task.project}/tasks/${this.state.task.id}/output/`;
+    
+    if (download !== undefined){
+      url += `?f=raw`;
+    }else{
+      url += `?f=json`;
+    }
+
+    if (line !== undefined){
+      url += `&line=${line}&limit=-502`;
+    }
+
+    return url;
+  }
+
+  thumbnailUrl = () => {
+    return `/api/projects/${this.state.task.project}/tasks/${this.state.task.id}/thumbnail?size=164`;  
   }
 
   hoursMinutesSecs(t){
@@ -192,13 +229,14 @@ class TaskListItem extends React.Component {
             uuid: this.state.task.uuid
           }
         ).done(json => {
-            if (json.success){
+            if (json.success || json.id){
               this.refresh();
-              if (options.success !== undefined) options.success();
+              if (options.success !== undefined) options.success(json);
             }else{
               this.setState({
                 actionError: json.error || options.defaultError || _("Cannot complete operation."),
-                actionButtonsDisabled: false
+                actionButtonsDisabled: false,
+                expanded: true
               });
             }
         })
@@ -207,6 +245,9 @@ class TaskListItem extends React.Component {
               actionError: options.defaultError || _("Cannot complete operation."),
               actionButtonsDisabled: false
             });
+        })
+        .always(() => {
+            if (options.always !== undefined) options.always();
         });
       }
 
@@ -224,7 +265,10 @@ class TaskListItem extends React.Component {
     if (!Array.isArray(options)) return "";
     else if (options.length === 0) return "Default";
     else {
-      return options.map(opt => `${opt.name}: ${opt.value}`).join(", ");
+      return options.map(opt => {
+        if (opt.name === "boundary") return `${opt.name}:geojson`;
+        else return `${opt.name}:${opt.value}`
+      }).join(", ");
     }
   }
 
@@ -234,6 +278,33 @@ class TaskListItem extends React.Component {
 
   stopEditing(){
     this.setState({editing: false});
+  }
+
+  copyToClipboard = (text) => {
+    if (navigator.clipboard !== undefined){
+      navigator.clipboard.writeText(text);
+    }else{
+      // navigator.clipboard is only available in secure contexts (HTTPS)
+      const el = document.createElement('textarea');
+      el.value = text;
+      el.style.position = 'fixed';
+      el.style.opacity = '0';
+      document.body.appendChild(el);
+      el.select();
+      try{
+        document.execCommand('copy');
+      }finally{
+        document.body.removeChild(el);
+      }
+    }
+    this.setState({copiedToClipboard: true});
+    if (this._clipboardTimeout){
+      clearTimeout(this._clipboardTimeout);
+      this._clipboardTimeout = null;
+    }
+    setTimeout(() => {
+      this.setState({copiedToClipboard: false});
+    }, 2000);
   }
 
   checkForCommonErrors(lines){
@@ -252,12 +323,12 @@ class TaskListItem extends React.Component {
           <li>${_("Not enough overlap between images")}</li>
           <li>${_("Images might be too blurry (common with phone cameras)")}</li>
           <li>${_("The min-num-features task option is set too low, try increasing it by 25%")}</li>
-        </ul>`, link: `<a href='https://support.dronedeploy.com/v1.0/docs/making-successful-maps' target='_blank'>${_("here")}</a>`})});
+        </ul>`, link: `<a href='https://docs.webodm.net/references/create-successful-maps' target='_blank'>${_("here")}</a>`})});
       }else if (line.indexOf("Illegal instruction") !== -1 ||
                 line.indexOf("Child returned 132") !== -1){
-        this.setState({friendlyTaskError: interpolate(_("It looks like this computer might be too old. WebODM requires a computer with a 64-bit CPU supporting MMX, SSE, SSE2, SSE3 and SSSE3 instruction set support or higher. You can still run WebODM if you compile your own docker images. See %(link)s for more information."), { link: `<a href='https://github.com/OpenDroneMap/WebODM#common-troubleshooting'>${_("this page")}</a>` } )});
+        this.setState({friendlyTaskError: interpolate(_("It looks like this computer might be too old. WebODM requires a computer with a 64-bit CPU supporting MMX, SSE, SSE2, SSE3 and SSSE3 instruction set support or higher. You can still run WebODM if you compile your own docker images. See %(link)s for more information."), { link: `<a href='https://docs.webodm.org/installation/#common-troubleshooting'>${_("this page")}</a>` } )});
       }else if (line.indexOf("Child returned 127") !== -1){
-        this.setState({friendlyTaskError: _("The processing node is missing a program necessary to complete the task. This might indicate a corrupted installation. If you built OpenDroneMap, please check that all programs built without errors.")});
+        this.setState({friendlyTaskError: _("The processing node is missing a program necessary to complete the task. This might indicate a corrupted installation. If you built ODM, please check that all programs built without errors.")});
       }
     }
   }
@@ -268,7 +339,25 @@ class TaskListItem extends React.Component {
 
   handleEditTaskSave(task){
     this.setState({task, editing: false});
+    if (this.props.onEdited) this.props.onEdited(task);
     this.setAutoRefresh();
+  }
+
+  handleMoveTask = () => {
+    this.setState({showMoveDialog: true});
+  }
+
+  handleDuplicateTask = () => {
+    this.setState({actionLoading: true});
+    this.genActionApiCall("duplicate", { 
+        success: (json) => {
+            if (json.task){
+                if (this.props.onDuplicate) this.props.onDuplicate(json.task);
+            }
+        },
+        always: () => {
+            this.setState({actionLoading: false});
+        }})();
   }
 
   getRestartSubmenuItems(){
@@ -301,7 +390,7 @@ class TaskListItem extends React.Component {
     return items;
   }
 
-  genRestartAction(rerunFrom = null){
+  genRestartAction(rerunFrom = null, options = {}){
     const { task } = this.state;
 
     const restartAction = this.genActionApiCall("restart", {
@@ -356,10 +445,73 @@ class TaskListItem extends React.Component {
           });
     };
 
-    return () => {
+    let doAction = () => {
       setTaskRerunFrom(rerunFrom)
         .then(restartAction);
     };
+
+    return () => {
+      if (options.confirm){
+        if (window.confirm(options.confirm)){
+          doAction();
+        }
+      }else{
+        doAction();
+      }
+    };
+  }
+
+  moveTaskAction = (formData) => {
+    if (formData.project !== this.state.task.project){
+        return $.ajax({
+            url: `/api/projects/${this.state.task.project}/tasks/${this.state.task.id}/`,
+            contentType: 'application/json',
+            data: JSON.stringify(formData),
+            dataType: 'json',
+            type: 'PATCH'
+          }).done(this.props.onMove);
+    }else return false;
+  }
+
+  handleTagClick = t => {
+    return () => {
+      if (this.props.onTagClicked) this.props.onTagClicked(t);
+    }
+  }
+
+  handleThumbError = e => {
+    this.setState({thumbLoadFailed: true});
+  }
+
+  spatialRefsToHuman = (refs) => {
+    if (refs.indexOf("alignment") !== -1) return _("Alignment");
+
+    let out = [];
+    if (refs.indexOf("gps") !== -1){
+      out.push(_("GPS"));
+    }
+    if (refs.indexOf("gcp") !== -1){
+      out.push(_("GCP"));
+    }
+
+    return out.join("/");
+  }
+
+  displayPdf = (url, opts) => {
+    if (Utils.isIOS()){
+      // PDF viewer in iOS only displays the first page
+      // open in a new tab instead
+      window.open(url, "pdf_report");
+    }else{
+      this.setState({displayPdf: {
+        url,
+        title: opts.title || ""
+      }})
+    }
+  }
+
+  hidePdf = () => {
+    this.setState({displayPdf: false});
   }
 
   render() {
@@ -368,16 +520,23 @@ class TaskListItem extends React.Component {
     const imported = task.import_url !== "";
 
     let status = statusCodes.description(task.status);
-    if (status === "") status = _("Uploading images to processing node");
+    if (status === "") status = _("Sending images to processing node");
 
-    if (!task.processing_node && !imported) status = _("Waiting for a node...");
+    if (!task.processing_node && !imported && task.status !== statusCodes.COMPLETED) status = _("Waiting for a node...");
     if (task.pending_action !== null) status = pendingActions.description(task.pending_action);
 
-
+    const disabled = this.state.actionButtonsDisabled || 
+                    ([pendingActions.CANCEL,
+                      pendingActions.REMOVE,
+                      pendingActions.COMPACT,
+                      pendingActions.RESTART].indexOf(task.pending_action) !== -1);
+    const editable = this.props.hasPermission("change") && [statusCodes.FAILED, statusCodes.COMPLETED, statusCodes.CANCELED].indexOf(task.status) !== -1;
+    const actionLoading = this.state.actionLoading;
+    const showAssetButtons = task.status === statusCodes.COMPLETED;
+    
     let expanded = "";
     if (this.state.expanded){
-      let showOrthophotoMissingWarning = false,
-          showMemoryErrorWarning = this.state.memoryError && task.status == statusCodes.FAILED,
+      let showMemoryErrorWarning = this.state.memoryError && task.status == statusCodes.FAILED && window.location.hostname.indexOf("webodm.net") === -1,
           showTaskWarning = this.state.friendlyTaskError !== "" && task.status == statusCodes.FAILED,
           showExitedWithCodeOneHints = task.last_error === "Process exited with code 1" &&
                                        !showMemoryErrorWarning &&
@@ -392,23 +551,66 @@ class TaskListItem extends React.Component {
         });
       };
 
-      if (task.status === statusCodes.COMPLETED){
-        if (task.available_assets.indexOf("orthophoto.tif") !== -1){
-          addActionButton(" " + _("View Map"), "btn-primary", "fa fa-globe", () => {
+      if (showAssetButtons){
+        if (task.available_assets.indexOf("orthophoto.tif") !== -1 || task.available_assets.indexOf("dsm.tif") !== -1 || task.available_assets.indexOf("dtm.tif") !== -1){
+          addActionButton(" " + _("Map"), "btn-primary", "fa fa-globe fa-fw", () => {
             location.href = `/map/project/${task.project}/task/${task.id}/`;
           });
-        }else{
-          showOrthophotoMissingWarning = true;
         }
 
-        addActionButton(" " + _("View 3D Model"), "btn-primary", "fa fa-cube", () => {
-          location.href = `/3d/project/${task.project}/task/${task.id}/`;
-        });
+        if (task.available_assets.indexOf("georeferenced_model.laz") !== -1 || 
+            task.available_assets.indexOf("georeferenced_model.las") !== -1 ||
+            task.available_assets.indexOf("textured_model.glb") !== -1 ||
+            task.available_assets.indexOf("textured_model.zip") !== -1){
+          addActionButton(" " + _("3D Model"), "btn-primary", "fa fa-cube fa-fw", () => {
+            location.href = `/3d/project/${task.project}/task/${task.id}/`;
+          });
+        }
+
+        if (task.available_assets.indexOf("report.pdf") !== -1){ 
+          addActionButton(" " + _("Report"), "btn-primary", "far fa-file-pdf fa-fw", () => {
+            this.displayPdf(`/api/projects/${task.project}/tasks/${task.id}/download/report.pdf?inline=1`, { 
+              title: task.name || _("Report")
+            });
+          }, { className: "btn-margin-right" });
+        }
       }
 
-      // Ability to change options
-      if ([statusCodes.FAILED, statusCodes.COMPLETED, statusCodes.CANCELED].indexOf(task.status) !== -1 ||
-          (!task.processing_node)){
+      if (this.props.hasPermission("delete")){
+          addActionButton(_("Delete"), "btn-danger", "fa fa-trash fa-fw", this.genActionApiCall("remove", {
+            confirm: _("All information related to this task, including images, maps and models will be deleted. Continue?"),
+            defaultError: _("Cannot delete task.")
+          }), {
+            className: "pull-right last-button"
+          });
+      }
+
+      if ([statusCodes.QUEUED, statusCodes.RUNNING, null].indexOf(task.status) !== -1 &&
+         (task.processing_node || imported) && this.props.hasPermission("change")){
+        addActionButton(_("Cancel"), "btn-primary", "glyphicon glyphicon-remove-circle", this.genActionApiCall("cancel", {defaultError: _("Cannot cancel task.")}),
+          {
+            className: "pull-right"
+          });
+      }
+
+      if ([statusCodes.FAILED, statusCodes.COMPLETED, statusCodes.CANCELED].indexOf(task.status) !== -1 &&
+            task.processing_node &&
+            this.props.hasPermission("change") &&
+            !imported &&
+            !task.compacted){
+          // By default restart reruns every pipeline
+          // step from the beginning
+          const rerunFrom = task.can_rerun_from.length > 1 ?
+                              task.can_rerun_from[1] :
+                              null;
+
+          addActionButton(_("Restart"), "btn-primary", "glyphicon glyphicon-repeat", this.genRestartAction(rerunFrom, {confirm: _("Are you sure you want to restart this task?")}), {
+            subItems: this.getRestartSubmenuItems(),
+            className: "pull-right"
+          });
+      }
+
+      if (editable || (!task.processing_node && !imported)){
         addActionButton(_("Edit"), "btn-primary pull-right edit-button", "glyphicon glyphicon-pencil", () => {
           this.startEditing();
         }, {
@@ -416,52 +618,33 @@ class TaskListItem extends React.Component {
         });
       }
 
-      if ([statusCodes.QUEUED, statusCodes.RUNNING, null].indexOf(task.status) !== -1 &&
-          (task.processing_node || imported)){
-        addActionButton(_("Cancel"), "btn-primary", "glyphicon glyphicon-remove-circle", this.genActionApiCall("cancel", {defaultError: _("Cannot cancel task.")}));
-      }
-
-      if ([statusCodes.FAILED, statusCodes.COMPLETED, statusCodes.CANCELED].indexOf(task.status) !== -1 &&
-            task.processing_node &&
-            !imported){
-          // By default restart reruns every pipeline
-          // step from the beginning
-          const rerunFrom = task.can_rerun_from.length > 1 ?
-                              task.can_rerun_from[1] :
-                              null;
-
-          addActionButton(_("Restart"), "btn-primary", "glyphicon glyphicon-repeat", this.genRestartAction(rerunFrom), {
-            subItems: this.getRestartSubmenuItems()
+      if (!task.last_error && task.status === null && (task.processing_node || imported) && task.partial && (!task.pending_action || (task.pending_action === pendingActions.RESIZE && !task.resize_progress)) && this.props.hasPermission("change")){
+        addActionButton(_("Start Processing"), "btn-primary", "glyphicon glyphicon-saved", this.genActionApiCall("commit", {
+            confirm: _("Have all images been uploaded?"),
+            defaultError: _("Cannot start processing task.")
+          }),
+          {
+            className: "pull-right"
           });
       }
 
-      addActionButton(_("Delete"), "btn-danger", "glyphicon glyphicon-trash", this.genActionApiCall("remove", {
-        confirm: _("All information related to this task, including images, maps and models will be deleted. Continue?"),
-        defaultError: _("Cannot delete task.")
-      }));
-
-      const disabled = this.state.actionButtonsDisabled || 
-                    ([pendingActions.CANCEL,
-                      pendingActions.REMOVE, 
-                      pendingActions.RESTART].indexOf(task.pending_action) !== -1);
-
       actionButtons = (<div className="action-buttons">
-            {task.status === statusCodes.COMPLETED ?
+            {showAssetButtons ?
               <AssetDownloadButtons task={this.state.task} disabled={disabled} />
             : ""}
             {actionButtons.map(button => {
               const subItems = button.options.subItems || [];
               const className = button.options.className || "";
 
-              let buttonHtml = (<button type="button" className={"btn btn-sm " + button.className} onClick={button.onClick} disabled={disabled}>
+              let buttonHtml = (<button title={button.label} type="button" className={"btn btn-sm " + button.className} onClick={button.onClick} disabled={disabled}>
                                 <i className={button.icon}></i>
-                                {button.label}
+                                <span className="hidden-xs hidden-sm">{button.label}</span>
                             </button>);
               if (subItems.length > 0){
                   // The button expands sub items
-                  buttonHtml = (<button type="button" className={"btn btn-sm " + button.className} data-toggle="dropdown" disabled={disabled}>
+                  buttonHtml = (<button title={button.label} type="button" className={"btn btn-sm " + button.className} data-toggle="dropdown" disabled={disabled}>
                         <i className={button.icon}></i>
-                        {button.label}
+                        <span className="hidden-xs hidden-sm">{button.label}</span>
                     </button>);
               }
 
@@ -484,36 +667,80 @@ class TaskListItem extends React.Component {
                   </div>);
             })}
           </div>);
-    
+
+      const stats = task.statistics;
+      const us = unitSystem();
+
       expanded = (
-        <div className="expanded-panel">
+        <div className="expanded-panel theme-secondary">
           <div className="row">
             <div className="col-md-12 no-padding">
-              <div className="console-switch text-right pull-right">
-                  <div className="console-output-label">{_("Task Output:")} </div><ul className="list-inline">
-                    <li>
-                      <div className="btn-group btn-toggle"> 
-                        <button onClick={this.setView("console")} className={"btn btn-xs " + (this.state.view === "basic" ? "btn-default" : "btn-primary")}>{_("On")}</button>
-                        <button onClick={this.setView("basic")} className={"btn btn-xs " + (this.state.view === "console" ? "btn-default" : "btn-primary")}>{_("Off")}</button>
-                      </div>
-                    </li>
-                  </ul>
+              <div className="col-md-9 col-sm-10 no-padding">
+                <table className="table table-condensed info-table">
+                  <tbody>
+                    <tr>
+                      <td><strong>{_("Task ID:")}</strong></td>
+                      <td><a title={_("Copy to clipboard")} onClick={() => this.copyToClipboard(task.id)} href="javascript:void(0)" className="task-id-link">{task.id} <i className={"clipboard " + (this.state.copiedToClipboard ? "fa fa-check visible" : "far fa-clipboard")}></i></a></td>
+                    </tr>
+                    <tr>
+                      <td><strong>{_("Created on:")}</strong></td>
+                      <td>{(new Date(task.created_at)).toLocaleString()}</td>
+                    </tr>
+                    {task.status !== statusCodes.COMPLETED && <tr>
+                      <td><strong>{_("Processing Node:")}</strong></td>
+                      <td>{task.processing_node_name || "-"} ({task.auto_processing_node ? _("auto") : _("manual")})</td>
+                    </tr>}
+                    {Array.isArray(task.options) &&
+                    <tr>
+                      <td><strong>{_("Options:")}</strong></td>
+                      <td>{this.optionsToList(task.options)}</td>
+                    </tr>}
+                    {stats && stats.gsd && 
+                    <tr>
+                      <td><strong>{_("Average GSD:")}</strong></td>
+                      <td>{us.length(parseFloat(stats.gsd) / 100, {gsd: true}).toString()}</td>
+                    </tr>}
+                    {stats && stats.area &&
+                    <tr>
+                      <td><strong>{_("Area:")}</strong></td>
+                       <td>{us.area(parseFloat(stats.area)).toString()}</td>
+                    </tr>}
+                    {stats && stats.pointcloud && stats.pointcloud.points &&
+                    <tr>
+                      <td><strong>{_("Points:")}</strong></td>
+                      <td>{stats.pointcloud.points.toLocaleString()}</td>
+                    </tr>}
+                    {stats && stats.spatial_refs && stats.spatial_refs.length ?
+                    <tr>
+                      <td><strong>{_("Georeferencing:")}</strong></td>
+                      <td>{this.spatialRefsToHuman(stats.spatial_refs)}</td>
+                    </tr> : null}
+                    {task.srs && task.srs.name ?
+                    <tr>
+                      <td><strong>{_("CRS:")}</strong></td>
+                      <td>{task.srs.name}</td>
+                    </tr> : null}
+                    {task.size > 0 && 
+                    <tr>
+                      <td><strong>{_("Disk Usage:")}</strong></td>
+                      <td>{Utils.bytesToSize(task.size * 1024 * 1024)}</td>
+                    </tr>}
+                    <tr>
+                        <td><strong>{_("Task Output:")}</strong></td>
+                        <td><div className="btn-group btn-toggle"> 
+                          <button onClick={this.setView("console")} className={"btn btn-xs " + (this.state.view === "basic" ? "btn-default" : "btn-primary")}>{_("On")}</button>
+                          <button onClick={this.setView("basic")} className={"btn btn-xs " + (this.state.view === "console" ? "btn-default" : "btn-primary")}>{_("Off")}</button>
+                        </div></td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
-
-              <div className="mb">
-                <div className="labels">
-                  <strong>{_("Created on:")} </strong> {(new Date(task.created_at)).toLocaleString()}<br/>
-                </div>
-                <div className="labels">
-                    <strong>{_("Processing Node:")} </strong> {task.processing_node_name || "-"} ({task.auto_processing_node ? _("auto") : _("manual")})<br/>
-                </div>
-                {Array.isArray(task.options) ?
-                   <div className="labels">
-                    <strong>{_("Options:")} </strong> {this.optionsToList(task.options)}<br/>
-                  </div>
-                : ""}
-                {/* TODO: List of images? */}
-              </div> 
+              {!this.state.thumbLoadFailed && task.status === statusCodes.COMPLETED ? 
+              <div className="col-md-3 col-sm-2 text-center">
+                <a href={`/map/project/${task.project}/task/${task.id}/`}>
+                  <img onError={this.handleThumbError} className="task-thumbnail" src={this.thumbnailUrl()} alt={_("Thumbnail")}/>
+                </a>
+              </div> : ""}
               
               {this.state.view === 'console' ?
                 <Console
@@ -528,26 +755,26 @@ class TaskListItem extends React.Component {
                     maximumLines={500}
                     /> : ""}
 
-              {showOrthophotoMissingWarning ?
-              <div className="task-warning"><i className="fa fa-warning"></i> <span>{_("An orthophoto could not be generated. To generate one, make sure GPS information is embedded in the EXIF tags of your images, or use a Ground Control Points (GCP) file.")}</span></div> : ""}
-
               {showMemoryErrorWarning ?
-              <div className="task-warning"><i className="fa fa-support"></i> <Trans params={{ memlink: `<a href="${memoryErrorLink}" target='_blank'>${_("enough RAM allocated")}</a>`, cloudlink: `<a href='https://www.opendronemap.org/webodm/lightning/' target='_blank'>${_("cloud processing node")}</a>` }}>{_("It looks like your processing node ran out of memory. If you are using docker, make sure that your docker environment has %(memlink)s. Alternatively, make sure you have enough physical RAM, reduce the number of images, make your images smaller, or reduce the max-concurrency parameter from the task's options. You can also try to use a %(cloudlink)s.")}</Trans></div> : ""}
+              <div className="task-warning"><i className="fa fa-support"></i> <Trans params={{ memlink: `<a href="${memoryErrorLink}" target='_blank'>${_("enough RAM allocated")}</a>`, cloudlink: `<a href='https://webodm.net' target='_blank'>${_("cloud processing node")}</a>` }}>{_("It looks like your processing node ran out of memory. If you are using docker, make sure that your docker environment has %(memlink)s. Alternatively, make sure you have enough physical RAM, reduce the number of images, make your images smaller, or reduce the max-concurrency parameter from the task's options. You can also try to use a %(cloudlink)s.")}</Trans></div> : ""}
 
               {showTaskWarning ?
               <div className="task-warning"><i className="fa fa-support"></i> <span dangerouslySetInnerHTML={{__html: this.state.friendlyTaskError}} /></div> : ""}
 
-              {showExitedWithCodeOneHints ?
+              {showExitedWithCodeOneHints && window.__taskOptionsDocsLink ?
               <div className="task-warning"><i className="fa fa-info-circle"></i> <div className="inline">
-                  <Trans params={{link1: `<a href="https://www.dronedb.app/" target="_blank">DroneDB</a>`, link2: `<a href="https://drive.google.com/drive/u/0/" target="_blank">Google Drive</a>`, open_a_topic: `<a href="http://community.opendronemap.org/c/webodm" target="_blank">${_("open a topic")}</a>`, }}>{_("\"Process exited with code 1\" means that part of the processing failed. Sometimes it's a problem with the dataset, sometimes it can be solved by tweaking the Task Options and sometimes it might be a bug! If you need help, upload your images somewhere like %(link1)s or %(link2)s and %(open_a_topic)s on our community forum, making sure to include a copy of your task's output. Our awesome contributors will try to help you!")}</Trans> <i className="far fa-smile"></i>
+                  <Trans params={{link: `<a href="${window.__taskOptionsDocsLink}" target="_blank">${window.__taskOptionsDocsLink.replace("https://", "")}</a>` }}>{_("\"Process exited with code 1\" means that part of the processing failed. Sometimes it's a problem with the dataset, sometimes it can be solved by tweaking the Task Options. Check the documentation at %(link)s")}</Trans>
                 </div>
               </div>
               : ""}
             </div>
           </div>
           <div className="row clearfix">
-            <ErrorMessage bind={[this, 'actionError']} />
             {actionButtons}
+            {this.state.displayPdf ? 
+              <PdfPopup url={this.state.displayPdf.url} 
+                        title={this.state.displayPdf.title}
+                        onClose={this.hidePdf} /> : ""}
           </div>
           <TaskPluginActionButtons task={task} disabled={disabled} />
         </div>
@@ -566,6 +793,8 @@ class TaskListItem extends React.Component {
         </div>;
       }
     }
+    
+    let statusIcon = statusCodes.icon(task.status);
 
     // @param type {String} one of: ['neutral', 'done', 'error']
     const getStatusLabel = (text, type = 'neutral', progress = 100) => {
@@ -575,22 +804,21 @@ class TaskListItem extends React.Component {
       return (<div 
             className={"status-label theme-border-primary " + type} 
             style={{background: `linear-gradient(90deg, ${color} ${progress}%, rgba(255, 255, 255, 0) ${progress}%)`}}
-            title={text}>{text}</div>);
+            title={text}><i className={statusIcon}></i><span> {text}</span></div>);
     }
 
     let statusLabel = "";
-    let statusIcon = statusCodes.icon(task.status);
     let showEditLink = false;
 
     if (task.last_error){
       statusLabel = getStatusLabel(task.last_error, 'error');
-    }else if (!task.processing_node && !imported){
+    }else if (!task.processing_node && !imported && this.props.hasPermission("change") && task.status !== statusCodes.COMPLETED){
       statusLabel = getStatusLabel(_("Set a processing node"));
-      statusIcon = "fa fa-hourglass-3";
+      statusIcon = "far fa-hourglass";
       showEditLink = true;
-    }else if (task.partial && !task.pending_action){
-      statusIcon = "fa fa-hourglass-3";
-      statusLabel = getStatusLabel(_("Waiting for image upload..."));
+    }else if (task.partial && (!task.pending_action || (task.pending_action === pendingActions.RESIZE && !task.resize_progress))){
+      statusIcon = "far fa-hourglass";
+      statusLabel = getStatusLabel(_("Waiting to start processing..."));
     }else{
       let progress = 100;
       let type = 'done';
@@ -607,32 +835,125 @@ class TaskListItem extends React.Component {
           type = 'neutral';
       }
 
+      if (task.pending_action === pendingActions.COMPACT){
+        statusIcon = 'fa fa-cog fa-spin fa-fw';
+      }
+
       statusLabel = getStatusLabel(status, type, progress);
     }
 
+    const taskActions = [];
+    const addTaskAction = (label, icon, onClick) => {
+        taskActions.push(
+            <li key={label}><a href="javascript:void(0)" onClick={onClick}><i className={icon}></i>{label}</a></li>
+        );
+    };
+
+    if ([statusCodes.QUEUED, statusCodes.RUNNING, null].indexOf(task.status) !== -1 &&
+        (task.processing_node || imported) && this.props.hasPermission("change")){
+        addTaskAction(_("Cancel"), "glyphicon glyphicon-remove-circle", this.genActionApiCall("cancel", {defaultError: _("Cannot cancel task.")}));
+    }
+
+    // Ability to change options
+    if (editable || (!task.processing_node && this.props.hasPermission("change"))){
+        taskActions.push(<li key="edit"><a href="javascript:void(0)" onClick={this.startEditing}><i className="glyphicon glyphicon-pencil"></i>{_("Edit")}</a></li>);
+    }
+
+    // Media
+    if (task.status === statusCodes.COMPLETED){
+      taskActions.push(
+            <li key="media"><a href="javascript:void(0)" onClick={() => { this.setState({showMediaDialog: true}); }}><i className="fa fa-image"></i>{_("Media")}</a></li>,
+            <li key="splats"><a href="javascript:void(0)" onClick={() => { this.setState({showSplatsDialog: true}); }}><i className="fa fa-splat"></i>{_("Splats")}</a></li>,
+      );
+    }
+
+    if (editable){
+        taskActions.push(
+            <li key="move"><a href="javascript:void(0)" onClick={this.handleMoveTask}><i className="fa fa-arrows-alt"></i>{_("Move")}</a></li>,
+            <li key="duplicate"><a href="javascript:void(0)" onClick={this.handleDuplicateTask}><i className="fa fa-copy"></i>{_("Duplicate")}</a></li>
+        );
+    }
+
+
+    if (this.props.hasPermission("delete")){
+        taskActions.push(
+            <li key="sep" role="separator" className="divider"></li>
+        );
+
+        if (task.status === statusCodes.COMPLETED && !task.compacted){
+          addTaskAction(_("Compact"), "fa fa-database", this.genActionApiCall("compact", {
+              confirm: _("Compacting will free disk space by permanently deleting the original images used for processing. It will no longer be possible to restart the task. Maps and models will remain in place. Continue?"),
+              defaultError: _("Cannot compact task.")
+          }));
+        }
+    
+        addTaskAction(_("Delete"), "fa fa-trash", this.genActionApiCall("remove", {
+            confirm: _("All information related to this task, including images, maps and models will be deleted. Continue?"),
+            defaultError: _("Cannot delete task.")
+        }));
+    }
+
+    let taskActionsIcon = "fa-ellipsis-h";
+    if (actionLoading) taskActionsIcon = "fa-circle-notch fa-spin fa-fw";
+    const userTags = Tags.userTags(task.tags);
+
     return (
       <div className="task-list-item">
+        {this.state.showMoveDialog ? 
+            <MoveTaskDialog 
+                task={task}
+                ref={(domNode) => { this.moveTaskDialog = domNode; }}
+                onHide={() => this.setState({showMoveDialog: false})}
+                saveAction={this.moveTaskAction}
+            />
+        : ""}
+        {this.state.showMediaDialog ?
+            <ManageMediaDialog
+                task={task}
+                projectId={task.project}
+                canEdit={this.props.hasPermission("change")}
+                onClose={() => this.setState({showMediaDialog: false})}
+            />
+        : ""}
+        {this.state.showSplatsDialog ?
+            <SplatsDialog
+                task={task}
+                projectId={task.project}
+                canEdit={this.props.hasPermission("change")}
+                onClose={() => this.setState({showSplatsDialog: false})}
+                onTaskChanged={() => this.refresh()}
+            />
+        : ""}
         <div className="row">
-          <div className="col-sm-5 name">
-            <i onClick={this.toggleExpanded} className={"clickable far " + (this.state.expanded ? "fa-minus-square" : " fa-plus-square")}></i> <a href="javascript:void(0);" onClick={this.toggleExpanded}>{name}</a>
+          <div className="col-xs-7 col-sm-6 col-md-5 col-lg-6 name">
+            <i onClick={this.toggleExpanded} className={"clickable far " + (this.state.expanded ? "fa-minus-square" : " fa-plus-square")}></i> <a href="javascript:void(0);" onClick={this.toggleExpanded} className="name-link">{name}</a>
+            {userTags.length > 0 ? 
+              userTags.map((t, i) => <div key={i} className="tag-badge small-badge" onClick={this.handleTagClick(t)}>{t}</div>)
+              : ""}
           </div>
-          <div className="col-sm-1 details">
+          <div className="col-md-1 hidden-xs hidden-sm details">
             <i className="far fa-image"></i> {task.images_count}
           </div>
-          <div className="col-sm-2 details">
+          <div className="col-md-2 hidden-xs hidden-sm details">
             <i className="far fa-clock"></i> {this.hoursMinutesSecs(this.state.time)}
           </div>
-          <div className="col-sm-3">
+          <div className="col-xs-5 col-sm-6 col-md-4 col-lg-3 actions">
             {showEditLink ?
               <a href="javascript:void(0);" onClick={this.startEditing}>{statusLabel}</a>
               : statusLabel}
-          </div>
-          <div className="col-sm-1 text-right">
-            <div className="status-icon">
-              <i className={statusIcon}></i>
-            </div>
+            {taskActions.length > 0 ? 
+                <div className="btn-group">
+                <button disabled={disabled || actionLoading} className="btn task-actions btn-secondary btn-xs dropdown-toggle" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                    <i className={"fa " + taskActionsIcon}></i>
+                </button>
+                <ul className="dropdown-menu dropdown-menu-right">
+                    {taskActions}
+                </ul>
+                </div>
+            : ""}
           </div>
         </div>
+        <ErrorMessage bind={[this, 'actionError']} />
         {expanded}
       </div>
     );

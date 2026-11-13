@@ -15,7 +15,7 @@ export default {
             {
                 action: "openmvs",
                 label: _("Multi View Stereo"),
-                icon: "fa fa-braille"
+                icon: "fa fa-pointcloud"
             },
             {
                 action: "odm_filterpoints",
@@ -51,6 +51,11 @@ export default {
                 action: "odm_report",
                 label: _("Report"),
                 icon: "far fa-file-alt"
+            },
+            {
+                action: "odm_postprocess",
+                label: _("Postprocess"),
+                icon: "fa fa-cog"
             }
         ];
     }

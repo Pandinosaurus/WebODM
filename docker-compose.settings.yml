@@ -1,0 +1,7 @@
+services:
+  webapp:
+    volumes:
+      - ${WO_SETTINGS}:/webodm/webodm/settings_override.py
+  worker:
+    volumes:
+      - ${WO_SETTINGS}:/webodm/webodm/settings_override.py

@@ -1,9 +1,15 @@
 import os
 import shutil
+import json
+import hashlib
+import urllib.request
 
 import sys
+import time
 
+from django.conf import settings
 from django.contrib.auth.models import User
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client
 from rest_framework import status
 
@@ -16,9 +22,18 @@ from app.plugins import sync_plugin_db, get_plugins_persistent_path
 from app.plugins.data_store import InvalidDataStoreValue
 from app.plugins.pyutils import parse_requirements, compute_file_md5, requirements_installed
 from .classes import BootTestCase
-from app.plugins.grass_engine import grass, GrassEngineException
 
-from worker.tasks import execute_grass_script
+
+def fetch(url, timeout, retries=5):
+    for i in range(retries + 1):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "WebODM"}), timeout=timeout) as r:
+                return r.read()
+        except Exception:
+            if i == retries:
+                raise
+            time.sleep(2 ** i)
+
 
 class TestPlugins(BootTestCase):
     def setUp(self):
@@ -53,7 +68,7 @@ class TestPlugins(BootTestCase):
         # We mounted an endpoint
         res = client.get('/plugins/test/app_mountpoint/')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertTemplateUsed(res, 'plugins/test/templates/app.html')
+        self.assertTemplateUsed(res, 'coreplugins/test/templates/app.html')
 
         # Form was rendered correctly
         self.assertContains(res,
@@ -134,76 +149,11 @@ class TestPlugins(BootTestCase):
         self.assertFalse(test_plugin.get_python_packages_path() in sys.path)
 
         # Parse requirements test
-        self.assertEqual(parse_requirements(test_plugin.get_path("requirements.txt"))[0], "pyodm")
+        self.assertEqual(parse_requirements(test_plugin.get_path("requirements.txt"))[0], "pyodx")
 
         # Current plugin test
         self.assertEqual(test_plugin.get_current_plugin_test(), test_plugin)
 
-
-
-    def test_grass_engine(self):
-        cwd = os.path.dirname(os.path.realpath(__file__))
-        grass_scripts_dir = os.path.join(cwd, "grass_scripts")
-
-        ctx = grass.create_context()
-        points = """{
-  "type": "FeatureCollection",
-  "features": [
-    {
-      "type": "Feature",
-      "properties": {},
-      "geometry": {
-        "type": "Point",
-        "coordinates": [
-          13.770675659179686,
-          45.655328041141374
-        ]
-      }
-    }
-  ]
-}"""
-        ctx.add_file('test.geojson', points)
-        ctx.set_location("EPSG:4326")
-
-        result = execute_grass_script.delay(
-            os.path.join(grass_scripts_dir, "simple_test.py"),
-            ctx.serialize()
-        ).get()
-
-        self.assertEqual("Number of points: 1", result.get('output'))
-
-        self.assertTrue(result.get('context') == ctx.serialize())
-
-        # Context dir has been cleaned up automatically
-        self.assertFalse(os.path.exists(ctx.get_cwd()))
-
-        error = execute_grass_script.delay(
-            os.path.join(grass_scripts_dir, "nonexistant_script.py"),
-            ctx.serialize()
-        ).get()
-        self.assertIsInstance(error, dict)
-        self.assertIsInstance(error['error'], str)
-
-        with self.assertRaises(GrassEngineException):
-            ctx.execute(os.path.join(grass_scripts_dir, "nonexistant_script.py"))
-
-        ctx = grass.create_context({"auto_cleanup": False})
-        ctx.add_file('test.geojson', points)
-        ctx.set_location("EPSG:4326")
-
-        result = execute_grass_script.delay(
-            os.path.join(grass_scripts_dir, "simple_test.py"),
-            ctx.serialize()
-        ).get()
-        self.assertEqual("Number of points: 1", result.get('output'))
-
-        # Path still there
-        self.assertTrue(os.path.exists(ctx.get_cwd()))
-
-        ctx.cleanup()
-
-        # Cleanup worked
-        self.assertFalse(os.path.exists(ctx.get_cwd()))
 
     def test_plugin_datastore(self):
         enable_plugin("test")
@@ -270,7 +220,7 @@ class TestPlugins(BootTestCase):
 
         # Cannot toggle plugins as normal user
         res = c.get('/admin/app/plugin/test/disable/', follow=True)
-        self.assertRedirects(res, '/admin/login/?next=/admin/app/plugin/test/disable/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
 
         c.login(username='testsuperuser', password='test1234')
 
@@ -281,6 +231,9 @@ class TestPlugins(BootTestCase):
         self.assertContains(res, '<a class="button" href="#" disabled>Enable</a>')
         self.assertContains(res, "<script src='/plugins/test/test.js'></script>")
 
+        self.assertContains(res, 'data-can-build="true"')
+        self.assertContains(res, 'data-webodm-version="{}"'.format(settings.VERSION))
+                
         # Disable
         res = c.get('/admin/app/plugin/test/disable/', follow=True)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
@@ -300,19 +253,19 @@ class TestPlugins(BootTestCase):
 
     def test_plugin_functions(self):
         # Check db/fs syncing
-        if os.path.exists('plugins/test_copy'):
+        if os.path.exists('coreplugins/test_copy'):
             print("Removing plugins/test_copy")
-            shutil.rmtree('plugins/test_copy')
+            shutil.rmtree('coreplugins/test_copy')
 
         sync_plugin_db()
         self.assertTrue(Plugin.objects.filter(pk='test_copy').count() == 0)
 
-        shutil.copytree('plugins/test', 'plugins/test_copy')
+        shutil.copytree('coreplugins/test', 'coreplugins/test_copy')
 
         sync_plugin_db()
         self.assertTrue(Plugin.objects.filter(pk='test_copy').count() == 1)
 
-        shutil.rmtree('plugins/test_copy')
+        shutil.rmtree('coreplugins/test_copy')
         sync_plugin_db()
         self.assertTrue(Plugin.objects.filter(pk='test_copy').count() == 0)
 
@@ -330,14 +283,14 @@ class TestPlugins(BootTestCase):
 
         # Cannot upload new plugins anonymously
         res = c.post('/admin/app/plugin/actions/upload/', {'file': plugin_file}, follow=True)
-        self.assertRedirects(res, '/admin/login/?next=/admin/app/plugin/actions/upload/')
+        self.assertRedirects(res, '/login/?next=/admin/app/plugin/actions/upload/')
         self.assertFalse(os.path.exists(get_plugins_persistent_path("testabc")))
         plugin_file.seek(0)
 
         # Cannot upload plugins as a normal user
         c.login(username='testuser', password='test1234')
         res = c.post('/admin/app/plugin/actions/upload/', {'file': plugin_file}, follow=True)
-        self.assertRedirects(res, '/admin/login/?next=/admin/app/plugin/actions/upload/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
         self.assertFalse(os.path.exists(get_plugins_persistent_path("testabc")))
         self.assertEqual(Plugin.objects.filter(pk='testabc').count(), 0)
         plugin_file.seek(0)
@@ -347,7 +300,7 @@ class TestPlugins(BootTestCase):
         res = c.post('/admin/app/plugin/actions/upload/', {'file': plugin_file}, follow=True)
         self.assertRedirects(res, '/admin/app/plugin/')
         messages = list(res.context['messages'])
-        self.assertTrue('Plugin added successfully' in str(messages[0]))
+        self.assertTrue('installed successfully' in str(messages[0]))
         self.assertTrue(os.path.exists(get_plugins_persistent_path("testabc")))
         plugin_file.seek(0)
 
@@ -374,6 +327,30 @@ class TestPlugins(BootTestCase):
         res = c.get('/plugins/testabc/file.txt')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
 
+        # Can install the dronedb plugin from the plugin repository
+        repo = "https://plugins.webodm.org"
+        index = json.loads(fetch(repo + "/index.json", 30))
+        ddb = [p for p in index['plugins'] if p['id'] == 'dronedb'][0]
+        ddb_zip = fetch(repo + ddb['url'], 60)
+        self.assertEqual(hashlib.sha256(ddb_zip).hexdigest(), ddb['sha256'])
+
+        res = c.post('/admin/app/plugin/actions/upload/', {
+            'file': SimpleUploadedFile('dronedb.zip', ddb_zip, content_type='application/zip'),
+            'sha256': ddb['sha256'],
+            'json': '1'
+        })
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertTrue(res.json()['success'], res.json()['message'])
+        self.assertEqual(Plugin.objects.filter(pk='dronedb').count(), 1)
+
+        ddb_plugin = get_plugin_by_name('dronedb', only_active=False)
+        self.assertFalse(ddb_plugin is None)
+
+        res = c.get('/admin/app/plugin/dronedb/delete/', follow=True)
+        self.assertRedirects(res, '/admin/app/plugin/')
+        self.assertEqual(Plugin.objects.filter(pk='dronedb').count(), 0)
+        self.assertFalse(os.path.exists(get_plugins_persistent_path("dronedb")))
+        
         c.logout()
 
         # Can still access the paths as anonymous
@@ -389,7 +366,7 @@ class TestPlugins(BootTestCase):
         # Cannot delete plugin as normal user
         c.login(username='testuser', password='test1234')
         res = c.get('/admin/app/plugin/testabc/delete/', follow=True)
-        self.assertRedirects(res, '/admin/login/?next=/admin/app/plugin/testabc/delete/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
 
         # Can delete plugin as admin
         c.login(username='testsuperuser', password='test1234')

@@ -74,6 +74,7 @@ target/
 .python-version
 
 # celery beat schedule file
+celerybeat-schedule.db
 celerybeat-schedule
 celerybeat.pid
 
@@ -82,6 +83,7 @@ celerybeat.pid
 
 # virtualenv
 venv/
+.venv/
 ENV/
 
 # Spyder project settings
@@ -98,3 +100,5 @@ package-lock.json
 .cronenv
 .initialized
 .DS_Store
+
+.secret_key

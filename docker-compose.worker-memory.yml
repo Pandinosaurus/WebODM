@@ -1,0 +1,3 @@
+services:
+  worker:
+    mem_limit: ${WO_WORKER_MEMORY}

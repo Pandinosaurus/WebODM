@@ -15,13 +15,6 @@ export default class ApiFactory{
     // are more robust as we can detect more easily if 
     // things break
 
-    // TODO: we should consider refactoring this code
-    // to use functions instead of events. Originally
-    // we chose to use events because that would have 
-    // decreased coupling, but since all API pubsub activity
-    // evolved to require a call to the PluginsAPI object, we might have
-    // added a bunch of complexity for no real advantage here.
-
     const addEndpoint = (obj, eventName, preTrigger = () => {}) => {
       const emitResponse = response => {
         // Timeout needed for modules that have no dependencies
@@ -72,7 +65,7 @@ export default class ApiFactory{
         args._placeholder = {};
         
         preTrigger(args, responseCb);
-        if (responseCb){
+        if (responseCb && this.events.listeners(`${api.namespace}::${eventName}`).length > 0){
           this.events.addListener(`${api.namespace}::${eventName}::Response`, response => {
             // Give time to all listeners to receive the replies
             // then remove the listener to avoid sending duplicate responses
@@ -98,6 +91,26 @@ export default class ApiFactory{
     if (api.helpers){
       obj = Object.assign(obj, api.helpers);
     }
+
+    // Handle syncronous function on/off/export
+    (api.functions || []).forEach(func => {
+      let callbacks = [];
+      obj[func] = (...args) => {
+        for (let i = 0; i < callbacks.length; i++){
+          if ((callbacks[i])(...args)) return true;
+        }
+        return false;
+      };
+
+      const onName = "on" + func[0].toUpperCase() + func.slice(1);
+      const offName = "off" + func[0].toUpperCase() + func.slice(1);
+      obj[onName] = f => {
+        callbacks.push(f);
+      };
+      obj[offName] = f => {
+        callbacks = callbacks.filter(cb => cb !== f);
+      };
+    });
 
     return obj;
   }

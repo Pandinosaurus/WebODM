@@ -1,0 +1,8 @@
+# Chaining this file to the main docker-compose file setups
+# volumes for NodeODX.
+
+services:
+  node-odx-1:
+    volumes:
+      - ${WO_NODE_DIR}/data:/var/www/data:Z
+      - ${WO_NODE_DIR}/tmp:/var/www/tmp:Z

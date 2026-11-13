@@ -28,7 +28,7 @@ if [ $? -ne 0 ]; then
 fi
 
 # Check GDAL version
-python -c "import sys;import re;import subprocess;version = subprocess.Popen([\"gdalinfo\", \"--version\"], stdout=subprocess.PIPE).communicate()[0].decode().rstrip();ret = 0 if re.compile('^GDAL [2-9]\.[0-9]+').match(version) else 1; print('Checking GDAL version... ' + ('{}, excellent!'.format(version) if ret == 0 else version));sys.exit(ret);"
+python -c "import sys;import re;import subprocess;version = subprocess.Popen([\"gdalinfo\", \"--version\"], stdout=subprocess.PIPE).communicate()[0].decode().rstrip();ret = 0 if re.compile(r'^GDAL [2-9]\.[0-9]+').match(version) else 1; print('Checking GDAL version... ' + ('{}, excellent!'.format(version) if ret == 0 else version));sys.exit(ret);"
 if [ $? -ne 0 ]; then
 	almost_there
     echo -e "\033[33mYour system is currently using a version of GDAL that is too old, or GDAL is not installed. You need to install or configure your system to use GDAL 2.1 or higher. If you have installed multiple versions of GDAL, make sure the newer one takes priority in your PATH environment variable.\033[39m"
@@ -39,19 +39,22 @@ fi
 if [ "$1" = "--setup-devenv" ] || [ "$2" = "--setup-devenv" ]; then
     echo Setup git modules...
     
+    git config --global --add safe.directory '*'
     git submodule update --init
     
     echo Setup npm dependencies...
     npm install
+
     cd nodeodm/external/NodeODM
     npm install
+
     cd /webodm
 
     echo Setup pip requirements...
     pip install -r requirements.txt
 
     echo Build translations...
-    ./translate.sh build safe
+    python manage.py translate build --safe
 
     echo Setup webpack watch...
     webpack --watch &
@@ -59,13 +62,15 @@ fi
 
 echo Running migrations
 python manage.py migrate
+echo Syncing grids
+python manage.py syncgrids --watch &
 
 if [[ "$WO_DEFAULT_NODES" > 0 ]]; then
-   echo -e "from nodeodm.models import ProcessingNode\nfor node_index in map(str, range(1, $WO_DEFAULT_NODES + 1)):\n\t ProcessingNode.objects.update_or_create(hostname='webodm_node-odm_' + node_index, defaults={'hostname': 'webodm_node-odm_' + node_index, 'port': 3000, 'label': 'node-odm-' + node_index})" | python manage.py shell
+    python manage.py addnode node-odx-1 3000 --label node-odx-1
 fi
 
 if [[ "$WO_CREATE_MICMAC_PNODE" = "YES" ]]; then
-   echo "from nodeodm.models import ProcessingNode; ProcessingNode.objects.update_or_create(hostname='node-micmac-1', defaults={'hostname': 'node-micmac-1', 'port': 3000})" | python manage.py shell
+    python manage.py addnode node-micmac-1 3000
 fi
 
 export WO_HOST="${WO_HOST:=localhost}"
@@ -105,8 +110,7 @@ congrats(){
 
     echo -e "\033[93m"
     echo Open a web browser and navigate to $proto://$WO_HOST:$WO_PORT
-    echo -e "\033[39m"
-    echo -e "\033[91mNOTE:\033[39m Windows users using docker should replace localhost with the IP of their docker machine's IP. To find what that is, run: docker-machine ip") &
+    echo -e "\033[39m") &
 }
 
 if [ "$1" = "--setup-devenv" ] || [ "$2" = "--setup-devenv" ] || [ "$1" = "--no-gunicorn" ]; then
@@ -137,10 +141,17 @@ else
         conf="nginx-ssl.conf"
     fi
 
+    # Only set if `WEB_CONCURRENCY` is not defined, allows overriding.
+    # See: https://docs.gunicorn.org/en/latest/settings.html#workers
+    if [ -z "$WEB_CONCURRENCY" ]; then
+        export WEB_CONCURRENCY=$((2*$(nproc)+1))
+    fi
+    echo "Web concurrency set to $WEB_CONCURRENCY"
+
     congrats
 
     nginx -c $(pwd)/nginx/$conf
-    gunicorn webodm.wsgi --bind unix:/tmp/gunicorn.sock --timeout 300000 --max-requests 250 --workers $((2*$(grep -c '^processor' /proc/cpuinfo)+1)) --preload 
+    gunicorn webodm.wsgi --bind unix:/tmp/gunicorn.sock --timeout 300000 --max-requests 5000 --workers $WEB_CONCURRENCY --preload
 fi
 
 # If this is executed, it means the previous command failed, don't display the congratulations message

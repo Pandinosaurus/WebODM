@@ -1,6 +1,8 @@
 from django.contrib.auth.models import User, Group
 from django.test import Client
 from rest_framework import status
+from guardian.shortcuts import assign_perm
+from nodeodm.models import ProcessingNode
 
 from app.models import Project, Task
 from app.models import Setting
@@ -24,6 +26,11 @@ class TestApp(BootTestCase):
         # Add user to test Group
         User.objects.get(pk=1).groups.add(my_group)
 
+        # Add view permissions
+        user = User.objects.get(username=self.credentials['username'])
+        pns = ProcessingNode.objects.all()
+        for pn in pns:
+            assign_perm('view_processingnode', user, pn)
 
     def test_user_login(self):
         c = Client()
@@ -89,6 +96,40 @@ class TestApp(BootTestCase):
         self.assertEqual(message.tags, 'warning')
         self.assertTrue("offline" in message.message)
 
+        # The menu should have 3 processing nodes
+        res = c.get('/dashboard/', follow=True)
+        self.assertEqual(res.content.decode("utf-8").count('href="/processingnode/'), 3)
+        self.assertTemplateUsed(res, 'app/dashboard.html')
+
+        # There should be an onboarding message
+        self.assertTrue('To create a map, press the' in res.content.decode("utf-8"))
+
+        # But not if we disable it
+        settings.DASHBOARD_ONBOARDING = False
+        res = c.get('/dashboard/', follow=True)
+        self.assertFalse('To create a map, press the' in res.content.decode("utf-8"))
+        settings.DASHBOARD_ONBOARDING  = True        
+
+        # The API should return 3 nodes
+        res = c.get('/api/processingnodes/')
+        self.assertEqual(len(res.data), 3)
+
+        # We can change that with a setting
+        settings.UI_MAX_PROCESSING_NODES = 1
+
+        res = c.get('/dashboard/', follow=True)
+        self.assertEqual(res.content.decode("utf-8").count('href="/processingnode/'), 1)
+        self.assertTemplateUsed(res, 'app/dashboard.html')
+
+        # There's no og:graph tag (no thumb)
+        self.assertEqual(res.content.decode("utf-8").count('<meta property="og:image"'), 0)
+        
+
+        res = c.get('/api/processingnodes/')
+        self.assertEqual(len(res.data), 1)
+
+        settings.UI_MAX_PROCESSING_NODES = None
+
         res = c.get('/processingnode/9999/')
         self.assertTrue(res.status_code == 404)
 
@@ -126,27 +167,70 @@ class TestApp(BootTestCase):
         self.assertTrue(res.status_code == status.HTTP_200_OK)
 
         # Cannot access public URLs unless a task is shared
-        def test_public_views(client, expectedStatus):
+        def test_public_task_views(client, expectedStatus):
             res = client.get('/public/task/{}/map/'.format(task.id))
             self.assertTrue(res.status_code == expectedStatus)
+            if expectedStatus == status.HTTP_200_OK:
+                self.assertEqual(res.content.decode("utf-8").count('<meta property="og:image"'), 1)
+
             res = client.get('/public/task/{}/3d/'.format(task.id))
             self.assertTrue(res.status_code == expectedStatus)
+            if expectedStatus == status.HTTP_200_OK:
+                self.assertEqual(res.content.decode("utf-8").count('<meta property="og:image"'), 1)
+            
             res = client.get('/public/task/{}/iframe/3d/'.format(task.id))
             self.assertTrue(res.status_code == expectedStatus)
             res = client.get('/public/task/{}/iframe/map/'.format(task.id))
             self.assertTrue(res.status_code == expectedStatus)
             res = client.get('/public/task/{}/json/'.format(task.id))
             self.assertTrue(res.status_code == expectedStatus)
+        
+        # Cannot access certain public URLs unless a project is shared
+        def test_public_project_views(client, expectedStatus):
+            if project.public_id is not None:
+                res = client.get('/public/project/{}/map/'.format(project.public_id))
+                self.assertTrue(res.status_code == expectedStatus)
+                if expectedStatus == status.HTTP_200_OK:
+                    self.assertEqual(res.content.decode("utf-8").count('<meta property="og:image"'), 0)
+                res = client.get('/public/project/{}/iframe/map/'.format(project.public_id))
+                self.assertTrue(res.status_code == expectedStatus)
+                res = client.get('/api/projects/{}/tasks/{}/'.format(project.id, task.id))
+                self.assertTrue(res.status_code == expectedStatus)
 
-        test_public_views(c, status.HTTP_404_NOT_FOUND)
+            
+        test_public_task_views(c, status.HTTP_404_NOT_FOUND)
+        test_public_project_views(c, status.HTTP_404_NOT_FOUND)
+
+        # Project should not have a public_id
+        self.assertTrue(project.public_id is None)
 
         # Share task
         task.public = True
         task.save()
 
-        # Can now access URLs even as anonymous user
+        # Can now access task URLs even as anonymous user
         ac = Client()
-        test_public_views(ac, status.HTTP_200_OK)
+        test_public_task_views(ac, status.HTTP_200_OK)
+
+        # Set project to public
+        project.public = True
+        project.save()
+        project.refresh_from_db()
+
+        # There should be a public_id
+        self.assertTrue(project.public_id is not None)
+
+        # Can access project/task URLs even as anonymous user
+        test_public_project_views(ac, status.HTTP_200_OK)
+        test_public_task_views(ac, status.HTTP_200_OK)
+
+        # Unshare a task
+        task.public = False
+        task.save()
+
+        # We can still access project/task URLs
+        test_public_project_views(ac, status.HTTP_200_OK)
+        test_public_task_views(ac, status.HTTP_200_OK)
 
     def test_admin_views(self):
         c = Client()
@@ -186,7 +270,7 @@ class TestApp(BootTestCase):
 
         for url in admin_menu_items:
             res = c.get(url, follow=True)
-            self.assertRedirects(res, '/admin/login/?next={}'.format(url))
+            self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
 
 
     def test_default_group(self):

@@ -1,9 +1,17 @@
 html, body, section.main, .content, #wrapper, #page-wrapper{
     height: auto;
 }
+a:focus{
+    outline: none;
+}
 #page-wrapper{
     margin-top: 1px;
     padding-bottom: 8px;
+}
+
+[data-mapview]{
+    height: calc(100vh - 100px);
+    height: calc(100dvh - 100px);
 }
 
 #public-wrapper{
@@ -11,6 +19,17 @@ html, body, section.main, .content, #wrapper, #page-wrapper{
     margin-right: 12px;
     position: relative;
     top: -14px;
+
+    .map-view{
+        .map-type-selector{
+            top: 20px;
+        }
+    }
+    .model-view{
+        .model-type-selector{
+            top: 20px;
+        }
+    }
 }
 
 #iframe{
@@ -34,6 +53,23 @@ html, body, section.main, .content, #wrapper, #page-wrapper{
     }
     [data-mapview], .model-view{
         height: calc(100vh);
+        height: calc(100dvh);
+    }
+    .model-view{
+        .model-view-header{
+            z-index: 1000;
+            position: absolute;
+            right: 10px;
+            top: 10px;
+        }
+
+        &.sidebar-open{
+            @media screen and (max-width: 447px){
+                .model-type-selector{
+                    display: none;
+                }
+            }
+        }
     }
 }
 
@@ -62,6 +98,8 @@ html, body, section.main, .content, #wrapper, #page-wrapper{
     }
 
     .navbar-top-links{
+        display: flex;
+        justify-content: flex-end;
         clear: both;
         a.dropdown-toggle{
             color: white;
@@ -80,8 +118,15 @@ html, body, section.main, .content, #wrapper, #page-wrapper{
         }
 
         li{
-            word-break: break-word;
+            overflow: hidden;
+            a{
+                word-break: auto-phrase;
+            }
         }
+    }
+
+    .sidebar-nav.navbar-collapse{
+        width: 100%;
     }
 
     .navbar-top-links li a.dropdown-toggle{
@@ -96,6 +141,20 @@ html, body, section.main, .content, #wrapper, #page-wrapper{
             opacity: 0.9;
         }
     }
+
+    .language-select{
+        padding: 3px 20px;
+        display: flex;
+        align-items: center;
+
+        select{
+            flex: 1;
+            margin-left: 4px;
+            height: 27px;
+            padding: 2px 6px;
+            line-height: 1.4;
+        }
+    }
 }
 
 ul#side-menu.nav{
@@ -106,12 +165,14 @@ ul#side-menu.nav{
 }
 
 .content{
-    clear: both;
     padding-top: 8px;
 
     h1,h2,h3,h4,h5{
         padding-top: 4px;
         margin-top: 0;
+    }
+    h3{
+        font-size: 24px;
     }
 }
 
@@ -143,6 +204,7 @@ ul#side-menu.nav{
 
 .modal-body {
     max-height: calc(100vh - 220px);
+    max-height: calc(100dvh - 220px);
     overflow-y: auto;
 }
 
@@ -199,11 +261,12 @@ button i.glyphicon{
 
 .dropdown-menu>li>a{
     padding-left: 10px;
-    color: #222;
-    .fa, .glyphicon{
+    color: #222 !important;
+    .fa, .far, .fas, .fab, .glyphicon{
         margin-right: 4px;
     }
 }
+
 
 /* This is to make the Header and navigation more mobile friendly */
 
@@ -212,7 +275,7 @@ button i.glyphicon{
     float: right;
     margin-right: 15px;
     padding: 9px 10px;
-    margin-top: 5px;
+    margin-top: 7px;
     margin-bottom: 5px;
 }
 
@@ -258,10 +321,41 @@ footer{
 }
 
 .full-height{
-    height: calc(100vh - 110px);
+    height: calc(100vh - 60px);
+    height: calc(100dvh - 60px);
     padding-bottom: 12px;
 }
 
 .floatfix{
     clear: both;
+}
+
+.model-title{
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.fa-pointcloud{
+    display: inline-block;
+    width: 1.25em;
+    height: 1em;
+    vertical-align: -.125em;
+    background-color: currentcolor;
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='4.5' cy='4.5' r='2.25'/%3E%3Ccircle cx='11.5' cy='4.5' r='2.25'/%3E%3Ccircle cx='4.5' cy='11.5' r='2.25'/%3E%3Ccircle cx='11.5' cy='11.5' r='2.25'/%3E%3C/svg%3E");
+    mask-repeat: no-repeat;
+    mask-position: center;
+    mask-size: contain;
+}
+
+.fa-splat{
+    display: inline-block;
+    width: 1.25em;
+    height: 1em;
+    vertical-align: -.125em;
+    background-color: currentcolor;
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cellipse cx='3' cy='4.6' rx='3.4' ry='2.1' transform='rotate(51 3 4.6)'/%3E%3Cellipse cx='11.2' cy='4.1' rx='3.3' ry='3.1'/%3E%3Cellipse cx='7.2' cy='12.2' rx='3.8' ry='2.3' transform='rotate(-6 7.2 12.2)'/%3E%3C/svg%3E");
+    mask-repeat: no-repeat;
+    mask-position: center;
+    mask-size: contain;
 }

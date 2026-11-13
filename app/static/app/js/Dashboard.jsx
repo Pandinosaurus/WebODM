@@ -1,8 +1,11 @@
 import React from 'react';
+import PropTypes from 'prop-types';
 import './css/Dashboard.scss';
 import ProjectList from './components/ProjectList';
 import EditProjectDialog from './components/EditProjectDialog';
+import Storage from './classes/Storage';
 import Utils from './classes/Utils';
+import Toaster from './components/Toaster';
 import {
   BrowserRouter as Router,
   Route
@@ -10,10 +13,20 @@ import {
 import $ from 'jquery';
 import { _ } from './classes/gettext';
 
+
 class Dashboard extends React.Component {
-  constructor(){
-    super();
-    
+  static defaultProps = {
+    permissions: [],
+    basemaps: []
+  };
+  static propTypes = {
+    permissions: PropTypes.array.isRequired,
+    basemaps: PropTypes.array
+  };
+
+  constructor(props){
+    super(props);
+
     this.handleAddProject = this.handleAddProject.bind(this);
     this.addNewProject = this.addNewProject.bind(this);
   }
@@ -28,10 +41,12 @@ class Dashboard extends React.Component {
     return $.ajax({
           url: `/api/projects/`,
           type: 'POST',
-          data: {
+          contentType: 'application/json',
+          data: JSON.stringify({
             name: project.name,
-            description: project.descr
-          }
+            description: project.descr,
+            tags: project.tags
+          })
       }).done(() => {
         this.projectList.refresh();
       });
@@ -39,29 +54,35 @@ class Dashboard extends React.Component {
     
   render() {
     const projectList = ({ location, history }) => {
-      let q = Utils.queryParams(location),
-          page = parseInt(q.page !== undefined ? q.page : 1);
+      let q = Utils.queryParams(location);
+      if (q.page === undefined) q.page = 1;
+      else q.page = parseInt(q.page);
+      if (q.ordering === undefined) q.ordering = Storage.getItem("project_ordering") || "";
+      q.page_size = parseInt(q.page_size !== undefined ? q.page_size : Storage.getItem("project_page_size")) || 10;
 
       return <ProjectList
-                source={`/api/projects/?ordering=-created_at&page=${page}`}
+                source={`/api/projects/${Utils.toSearchQuery(q)}`}
                 ref={(domNode) => { this.projectList = domNode; }} 
-                currentPage={page}
+                currentPage={q.page}
+                currentSearch={q.search}
                 history={history}
+                basemaps={this.props.basemaps}
                 />;
     };
 
 
-    return (
-      <Router basename="/dashboard">
+    return [
+      <Router key="router" basename="/dashboard">
         <div>
+          {this.props.permissions.indexOf("add_project") !== -1 ? 
           <div className="text-right add-button">
-            <button type="button" 
+             <button type="button" 
                     className="btn btn-primary btn-sm"
                     onClick={this.handleAddProject}>
               <i className="glyphicon glyphicon-plus"></i>
               {_("Add Project")}
             </button>
-          </div>
+          </div> : ""}
 
           <EditProjectDialog 
             saveAction={this.addNewProject}
@@ -69,16 +90,18 @@ class Dashboard extends React.Component {
             />
           <Route path="/" component={projectList} />
         </div>
-      </Router>
-    );
+      </Router>,
+      <Toaster key="toaster" />
+    ];
   }
 }
 
 $(function(){
     $("[data-dashboard]").each(function(){
-        window.ReactDOM.render(<Dashboard/>, $(this).get(0));
+        let props = $(this).data();
+        delete(props.dashboard);
+        window.ReactDOM.render(<Dashboard {...props}/>, $(this).get(0));
     });
-
 
     // Warn users if there's any sort of work in progress before
     // they press the back button on the browser

@@ -6,6 +6,9 @@ import { Checkbox, ExpandButton } from './Toggle';
 import Utils from '../classes/Utils';
 import Workers from '../classes/Workers';
 import ErrorMessage from './ErrorMessage';
+import ExportAssetPanel from './ExportAssetPanel';
+import ColorMaps from '../classes/ColorMaps';
+import PluginsAPI from '../classes/plugins/API';
 import $ from 'jquery';
 import { _, interpolate } from '../classes/gettext';
 
@@ -14,20 +17,22 @@ export default class LayersControlLayer extends React.Component {
       layer: null,
       expanded: false,
       map: null,
-      overlay: false
+      overlay: false,
+      separator: false
   };
   static propTypes = {
     layer: PropTypes.object.isRequired,
     expanded: PropTypes.bool,
     map: PropTypes.object.isRequired,
-    overlay: PropTypes.bool
-  }
+    overlay: PropTypes.bool,
+    separator: PropTypes.bool
+  };
 
   constructor(props){
     super(props);
 
     this.map = props.map;
-    
+
     const url = this.getLayerUrl();
     const params = Utils.queryParams({search: url.slice(url.indexOf("?"))});
 
@@ -38,16 +43,16 @@ export default class LayersControlLayer extends React.Component {
     // (not ideal, but works)
     const mUrl = this.meta.metaUrl;
     const mUrlToDownload = [
-        {url: "orthophoto/metadata", download: "orthophoto.tif"},
-        {url: "dsm/metadata", download: "dsm.tif"},
-        {url: "dtm/metadata", download: "dtm.tif"}
+        {url: "orthophoto/metadata", download: "orthophoto"},
+        {url: "dsm/metadata", download: "dsm"},
+        {url: "dtm/metadata", download: "dtm"}
     ];
 
     if (mUrl){
         for (let d of mUrlToDownload){
             const idx = mUrl.lastIndexOf(d.url);
             if (idx !== -1){
-                this.downloadFileUrl = mUrl.substr(0, idx) + "download/" + d.download;
+                this.asset = d.download;
                 break;
             }
         }
@@ -60,11 +65,13 @@ export default class LayersControlLayer extends React.Component {
         formula: params.formula || "",
         bands: params.bands || "",
         hillshade: params.hillshade || "",
+        display: params.display || "elevation",
         histogramLoading: false,
         exportLoading: false,
-        error: ""
+        side: false,
+        error: "",
+        lazyLoading: false,
     };
-
     this.rescale = params.rescale || "";
   }
 
@@ -72,14 +79,70 @@ export default class LayersControlLayer extends React.Component {
       return this.props.layer._url || "";
   }
 
+  componentDidMount(){
+    PluginsAPI.Map.onMapTypeChanged(this.handleMapTypeChange);
+    PluginsAPI.Map.onSideBySideChanged(this.handleSideBySideChange);
+  }
+
+  isLayerWithSameTaskIdVisible = () => {
+    if (!this.meta.task) return true;
+
+    const taskId = this.meta.task.id;
+    for (let layer of Object.values(this.props.map._layers)){
+        if (!layer[Symbol.for("meta")] || !layer.isHidden) continue;
+        const meta = layer[Symbol.for("meta")];
+        if (meta.task.id === taskId && 
+            this.props.map.hasLayer(layer) && 
+            !layer.isHidden()){
+            return true;
+        }
+    }
+    return false;
+  }
+
+  handleMapTypeChange = (type, autoExpand) => {
+    if (this.meta.type !== undefined){
+        const visible = this.meta.type === type && (autoExpand || this.isLayerWithSameTaskIdVisible());
+        const expanded = visible && autoExpand;
+        this.setState({visible, expanded});
+    }
+  }
+
+  handleSideBySideChange = (layer, side) => {
+    // Toggle this layer's side off if it was previously sided
+    // when another layer is set to side
+    if (this.props.layer !== layer && this.state.side && side){
+        setTimeout(() => {
+            let visible = this.state.visible;
+            if (this.wasInvisibleOnSideClick){
+                visible = false;
+                this.wasInvisibleOnSideClick = false;
+            }
+    
+            this.setState({ side: false, visible });
+            PluginsAPI.Map.sideBySideChanged(this.props.layer, false);
+        }, 0);
+    }
+  }
+
   componentDidUpdate(prevProps, prevState){
     const { layer } = this.props;
 
     if (prevState.visible !== this.state.visible){
         if (this.state.visible){
-            layer.addTo(this.map);
+            if (layer.lazyLoad && !layer.lazyLoaded && !this.state.lazyLoading){
+                this.setState({lazyLoading: true});
+                layer.lazyLoad((err) => {
+                    if (!err) layer.lazyLoaded = true;
+                    this.setState({lazyLoading: false});
+                });
+            }
+
+            if (layer.show) layer.show(); 
+            else if (!this.map.hasLayer(layer)) layer.addTo(this.map);
         }else{
-            this.map.removeLayer(layer);
+            if (layer.hide) layer.hide();
+            else this.map.removeLayer(layer);
         }
     }
 
@@ -88,12 +151,13 @@ export default class LayersControlLayer extends React.Component {
     }
 
     if (prevState.formula !== this.state.formula ||
-        prevState.bands !== this.state.bands){
+        prevState.bands !== this.state.bands ||
+        prevState.display !== this.state.display){
         this.updateHistogram();
     }
 
     if (prevProps.expanded !== this.props.expanded){
-        this.state.expanded = this.props.expanded;
+        this.setState({expanded: this.props.expanded});
     }
   }
 
@@ -107,9 +171,12 @@ export default class LayersControlLayer extends React.Component {
         this.exportReq.abort();
         this.exportReq = null;
     }
+
+    PluginsAPI.Map.offSideBySideChanged(this.handleSideBySideChange);
+    PluginsAPI.Map.offMapTypeChanged(this.handleMapTypeChange);
   }
 
-  handleLayerClick = () => {
+  handleZoomToClick = () => {
     const { layer } = this.props;
 
     const bounds = layer.options.bounds !== undefined ? 
@@ -120,6 +187,40 @@ export default class LayersControlLayer extends React.Component {
     if (layer.getPopup()) layer.openPopup();
   }
 
+  handleSideClick = () => {
+    let { side, visible } = this.state;
+
+    if (!side){
+        side = true;
+        if (!visible){
+            visible = true;
+            this.wasInvisibleOnSideClick = true;
+        }
+    }else{
+        side = false;
+        if (this.wasInvisibleOnSideClick){
+            visible = false;
+            this.wasInvisibleOnSideClick = false;
+        }
+    }
+
+    this.setState({ side, visible });
+    PluginsAPI.Map.sideBySideChanged(this.props.layer, side);
+  }
+
+  sideIcon = () => {
+    if (!this.state.side) return "fa-divide fa-rotate-90";
+    else return "fa-chevron-right";
+  }
+
+  handleLayerClick = () => {
+    if (this.props.overlay){
+        this.setState({visible: !this.state.visible});
+    }else{
+        this.setState({expanded: !this.state.expanded});
+    }
+  }
+
   handleSelectColor = e => {
     this.setState({colorMap: e.target.value});
   }
@@ -128,12 +229,20 @@ export default class LayersControlLayer extends React.Component {
     this.setState({hillshade: e.target.value});
   }
 
+  handleSelectDisplay = e => {
+    this.setState({display: e.target.value});
+  }
+
+  isElevationModel = () => {
+    return this.asset === "dsm" || this.asset === "dtm";
+  }
+
   handleSelectFormula = e => {
     let bands = this.state.bands;
 
     // Check if bands need to be switched
     const algo = this.getAlgorithm(e.target.value);
-    if (algo && algo['filters'].indexOf(bands) === -1) bands = algo['filters'][0]; // Pick first
+    if (algo && algo['filters'].indexOf(bands) === -1 && bands !== "auto") bands = algo['filters'][0]; // Pick first
 
     this.setState({formula: e.target.value, bands});
   }
@@ -164,12 +273,25 @@ export default class LayersControlLayer extends React.Component {
     this.setState({histogramLoading: true});
     this.updateHistogramReq = $.getJSON(Utils.buildUrlWithQuery(this.meta.metaUrl, this.getLayerParams()))
         .done(mres => {
+            ColorMaps.decode(mres.color_maps);
             this.tmeta = this.props.layer[Symbol.for("tile-meta")] = mres;
             
             // Update rescale values
             const { statistics } = this.tmeta;
             if (statistics && statistics["1"]){
-                this.rescale = `${statistics["1"]["min"]},${statistics["1"]["max"]}`;
+                let min = Infinity;
+                let max = -Infinity;
+
+                for (let b in statistics){
+                    min = Math.min(min, statistics[b]["percentiles"][0]);
+                    max = Math.max(max, statistics[b]["percentiles"][1]);
+                }
+                this.rescale = `${min},${max}`;
+            }
+
+            const { color_maps } = this.tmeta;
+            if (this.state.colorMap && color_maps.length && !color_maps.find(c => c.key === this.state.colorMap)){
+                this.setState({colorMap: color_maps[0].key});
             }
 
             this.updateLayer();
@@ -184,14 +306,18 @@ export default class LayersControlLayer extends React.Component {
     const { colorMap,
         formula,
         bands,
-        hillshade } = this.state;
+        hillshade,
+        display } = this.state;
     
     return {
         color_map: colorMap,
         formula,
         bands,
-        hillshade,
-        rescale: this.rescale
+        hillshade: display === "slope" ? "0" : hillshade,
+        display: display === "elevation" ? "" : display,
+        rescale: this.rescale,
+        size: 512,
+        crop: 1
     };
   }
   
@@ -258,26 +384,43 @@ export default class LayersControlLayer extends React.Component {
   }
 
   render(){
-    const { colorMap, bands, hillshade, formula, histogramLoading, exportLoading } = this.state;
+    const { colorMap, bands, hillshade, formula, display, histogramLoading, exportLoading, lazyLoading } = this.state;
     const { meta, tmeta } = this;
-    const { color_maps, algorithms } = tmeta;
+    const { color_maps, algorithms, auto_bands } = tmeta;
     const algo = this.getAlgorithm(formula);
+    const slope = display === "slope";
 
     let cmapValues = null;
     if (colorMap){
-        cmapValues = (color_maps.find(c => c.key === colorMap) || {}).color_map;
+        cmapValues = (color_maps.find(c => c.key === colorMap) || {}).decoded_color_map;
+    }
+
+    let hmin = null;
+    let hmax = null;
+    if (this.rescale){
+        let parts = decodeURIComponent(this.rescale).split(",");
+        if (parts.length === 2 && parts[0] && parts[1]){
+            hmin = parseFloat(parts[0]);
+            hmax = parseFloat(parts[1]);
+        }
     }
 
     return (<div className="layers-control-layer">
-        {!this.props.overlay ? <ExpandButton bind={[this, 'expanded']} /> : <div className="overlayIcon"><i className={meta.icon || "fa fa-vector-square fa-fw"}></i></div>}<Checkbox bind={[this, 'visible']}/>
-        <a title={meta.name} className="layer-label" href="javascript:void(0);" onClick={this.handleLayerClick}>{meta.name}</a>
+        <div className="layer-control-title">
+            {!this.props.overlay ? <ExpandButton bind={[this, 'expanded']} className="expand-layer" /> : <div className="paddingSpace"></div>}<Checkbox bind={[this, 'visible']} bindLoading={[this, 'lazyLoading']}/>
+            <a title={meta.name} className="layer-label" href="javascript:void(0);" onClick={this.handleLayerClick}><i className={"layer-icon " + (meta.icon || "fa fa-vector-square fa-fw")}></i><div className="layer-title">{meta.name}</div></a> {meta.raster ? <a className="layer-action" href="javascript:void(0)" onClick={this.handleSideClick}><i title={_("Side By Side")} className={"fa fa-fw " + this.sideIcon()}></i></a> : ""}<a className="layer-action" href="javascript:void(0)" onClick={this.handleZoomToClick}><i title={_("Zoom To")} className="fa fa-expand"></i></a>
+        </div>
 
         {this.state.expanded ? 
         <div className="layer-expanded">
             <Histogram width={274}
                         loading={histogramLoading}
-                        statistics={tmeta.statistics} 
+                        statistics={tmeta.statistics}
+                        unitForward={slope ? undefined : meta.unitForward}
+                        unitBackward={slope ? undefined : meta.unitBackward}
                         colorMap={cmapValues}
+                        min={hmin}
+                        max={hmax}
                         onUpdate={this.handleHistogramUpdate} />
 
             <ErrorMessage bind={[this, "error"]} />
@@ -296,21 +439,25 @@ export default class LayersControlLayer extends React.Component {
 
             {bands !== "" && algo ? 
             <div className="row form-group form-inline">
-                <label className="col-sm-3 control-label">{_("Filter:")}</label>
+                <label className="col-sm-3 control-label">{_("Bands:")}</label>
                 <div className="col-sm-9 ">
                     {histogramLoading ? 
                     <i className="fa fa-circle-notch fa-spin fa-fw" /> :
-                    <select className="form-control" value={bands} onChange={this.handleSelectBands}>
+                    [<select key="sel" className="form-control" value={bands} onChange={this.handleSelectBands} title={auto_bands.filter !== "" && bands == "auto" ? auto_bands.filter : ""}>
+                        <option key="auto" value="auto">{_("Automatic")}</option>
                         {algo.filters.map(f => <option key={f} value={f}>{f}</option>)}
-                    </select>}
+                    </select>,
+                    bands == "auto" && !auto_bands.match ? 
+                    <i key="ico" style={{marginLeft: '4px'}} title={interpolate(_("Not every band for %(name)s could be automatically identified."), {name: algo.id}) + "\n" + _("Your sensor might not have the proper bands for using this algorithm.")} className="fa fa-exclamation-circle info-button"></i>
+                    : ""]}
                 </div>
             </div> : ""}
 
-            {colorMap && color_maps.length ? 
+            {colorMap && color_maps.length ?
             <div className="row form-group form-inline">
                 <label className="col-sm-3 control-label">{_("Color:")}</label>
                 <div className="col-sm-9 ">
-                    {histogramLoading ? 
+                    {histogramLoading ?
                     <i className="fa fa-circle-notch fa-spin fa-fw" /> :
                     <select className="form-control" value={colorMap} onChange={this.handleSelectColor}>
                         {color_maps.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
@@ -318,7 +465,18 @@ export default class LayersControlLayer extends React.Component {
                 </div>
             </div> : ""}
 
-            {hillshade !== "" ? 
+            {this.isElevationModel() ?
+            <div className="row form-group form-inline">
+                <label className="col-sm-3 control-label">{_("Display:")}</label>
+                <div className="col-sm-9 ">
+                    <select className="form-control" value={display} onChange={this.handleSelectDisplay}>
+                        <option value="elevation">{_("Elevation")}</option>
+                        <option value="slope">{_("Slope")}</option>
+                    </select>
+                </div>
+            </div> : ""}
+
+            {hillshade !== "" && display !== "slope" ? 
             <div className="row form-group form-inline">
                 <label className="col-sm-3 control-label">{_("Shading:")}</label>
                 <div className="col-sm-9 ">
@@ -330,16 +488,14 @@ export default class LayersControlLayer extends React.Component {
                 </div>
             </div> : ""}
 
-            <div className="row form-group form-inline">
-                <label className="col-sm-3 control-label">{_("Export:")} </label>
-                <div className="col-sm-9">
-                    <button onClick={this.handleExport} disabled={exportLoading} type="button" className="btn btn-sm btn-default">
-                        {exportLoading ? <i className="fa fa-spin fa-circle-notch"/> : <i className="far fa-image fa-fw" />} GeoTIFF
-                    </button>
-                </div>
-            </div>
+            <ExportAssetPanel task={meta.task} 
+                            asset={this.asset} 
+                            exportParams={this.getLayerParams} 
+                            dropUp />
+            
+            {this.props.separator ? <hr className="layer-separator" /> : ""}
         </div> : ""}
     </div>);
-                
-  }
+
+   }
 }

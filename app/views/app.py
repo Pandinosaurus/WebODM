@@ -1,6 +1,6 @@
 import json
 
-from django.contrib.auth import login
+from django.contrib.auth import login, logout as auth_logout
 from django.contrib.auth.hashers import make_password
 from django.contrib.auth.models import User
 from django.http import Http404
@@ -8,11 +8,13 @@ from django.shortcuts import render, redirect, get_object_or_404
 from guardian.shortcuts import get_objects_for_user
 
 from nodeodm.models import ProcessingNode
-from app.models import Project, Task
+from app.models import Project, Task, Basemap
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.utils.translation import ugettext as _
+from django.utils.html import format_html
+from django.utils.translation import gettext as _
 from django import forms
+from app.views.utils import get_permissions, get_project_or_raise, get_task_or_raise, handle_302, ResponseClusterRedirect, cluster_mode
 from webodm import settings
 
 def index(request):
@@ -25,68 +27,98 @@ def index(request):
             # the user is expected to create an admin account
             return redirect('welcome')
 
-    if settings.SINGLE_USER_MODE and not request.user.is_authenticated:
-        login(request, User.objects.get(username="admin"), 'django.contrib.auth.backends.ModelBackend')
+    if not request.user.is_authenticated:
+        if settings.SINGLE_USER_MODE:
+            login(request, User.objects.get(username="admin"), 'django.contrib.auth.backends.ModelBackend')
+        elif settings.AUTO_LOGIN_USER:
+            login(request, User.objects.get(username=settings.AUTO_LOGIN_USER), 'django.contrib.auth.backends.ModelBackend')
 
     return redirect(settings.LOGIN_REDIRECT_URL if request.user.is_authenticated
                     else settings.LOGIN_URL)
 
 @login_required
+def logout(request):
+    auth_logout(request)
+    return render(request, 'registration/logged_out.html', {'title': _('Logged out')})
+
+@login_required
 def dashboard(request):
+    if cluster_mode():    
+        if request.user.profile.cluster_id is not None and request.user.profile.cluster_id != settings.CLUSTER_ID:
+            return ResponseClusterRedirect(request, request.user.profile.cluster_id)
+    
     no_processingnodes = ProcessingNode.objects.count() == 0
     if no_processingnodes and settings.PROCESSING_NODES_ONBOARDING is not None:
         return redirect(settings.PROCESSING_NODES_ONBOARDING)
 
     no_tasks = Task.objects.filter(project__owner=request.user).count() == 0
+    no_projects = Project.objects.filter(owner=request.user).count() == 0
 
+    permissions = []
+    if request.user.has_perm('app.add_project'):
+        permissions.append('add_project')
+    
     # Create first project automatically
-    if Project.objects.count() == 0:
+    if settings.DASHBOARD_ONBOARDING and no_projects and 'add_project' in permissions:
         Project.objects.create(owner=request.user, name=_("First Project"))
 
     return render(request, 'app/dashboard.html', {'title': _('Dashboard'),
         'no_processingnodes': no_processingnodes,
-        'no_tasks': no_tasks
+        'no_tasks': no_tasks,
+        'onboarding': settings.DASHBOARD_ONBOARDING,
+        'params': {
+            'permissions': json.dumps(permissions),
+            'basemaps': json.dumps(Basemap.get_cached_basemaps())
+        }.items()
     })
 
 
 @login_required
+@handle_302
 def map(request, project_pk=None, task_pk=None):
     title = _("Map")
 
     if project_pk is not None:
-        project = get_object_or_404(Project, pk=project_pk)
+        project = get_project_or_raise(pk=project_pk)
         if not request.user.has_perm('app.view_project', project):
             raise Http404()
         
         if task_pk is not None:
-            task = get_object_or_404(Task.objects.defer('orthophoto_extent', 'dsm_extent', 'dtm_extent'), pk=task_pk, project=project)
+            task = get_task_or_raise(pk=task_pk, project=project)
             title = task.name or task.id
             mapItems = [task.get_map_items()]
+            projectInfo = None
         else:
             title = project.name or project.id
             mapItems = project.get_map_items()
+            projectInfo = project.get_public_info()
 
     return render(request, 'app/map.html', {
             'title': title,
             'params': {
                 'map-items': json.dumps(mapItems),
                 'title': title,
-                'public': 'false'
+                'public': 'false',
+                'share-buttons': 'true',
+                'permissions': json.dumps(get_permissions(request.user, project)),
+                'project': json.dumps(projectInfo),
+                'basemaps': json.dumps(Basemap.get_cached_basemaps()),
             }.items()
         })
 
 
 @login_required
+@handle_302
 def model_display(request, project_pk=None, task_pk=None):
     title = _("3D Model Display")
 
     if project_pk is not None:
-        project = get_object_or_404(Project, pk=project_pk)
+        project = get_project_or_raise(pk=project_pk)
         if not request.user.has_perm('app.view_project', project):
             raise Http404()
 
         if task_pk is not None:
-            task = get_object_or_404(Task.objects.defer('orthophoto_extent', 'dsm_extent', 'dtm_extent'), pk=task_pk, project=project)
+            task = get_task_or_raise(pk=task_pk, project=project)
             title = task.name or task.id
         else:
             raise Http404()
@@ -95,7 +127,10 @@ def model_display(request, project_pk=None, task_pk=None):
             'title': title,
             'params': {
                 'task': json.dumps(task.get_model_display_params()),
-                'public': 'false'
+                'title': title,
+                'public': 'false',
+                'share-buttons': 'true',
+                'model-type': request.GET.get('t', 'cloud'),
             }.items()
         })
 
@@ -105,8 +140,14 @@ def about(request):
 @login_required
 def processing_node(request, processing_node_id):
     pn = get_object_or_404(ProcessingNode, pk=processing_node_id)
+    
+    if settings.DEPRECATION_WARNINGS and pn.engine is not None and pn.engine == 'odm':
+        messages.add_message(request, messages.constants.WARNING, format_html(
+            _('%(node)s is deprecated might stop working in a future version. See the %(link_start)s migration guide %(link_end)s to upgrade.' % {'node': pn, 'link_start': '<a href="https://docs.webodm.org/tutorials/opendronemap-migration-guide/" target="_blank">', 'link_end': '</a>'}),
+        ))
+
     if not pn.update_node_info():
-        messages.add_message(request, messages.constants.WARNING, '{} seems to be offline.'.format(pn))
+        messages.add_message(request, messages.constants.WARNING, _('%(node)s seems to be offline.') % {'node': pn})
 
     return render(request, 'app/processing_node.html', 
             {
@@ -149,7 +190,10 @@ def welcome(request):
                   })
 
 
-def handler404(request):
+def handler403(request, exception):
+    return render(request, '403.html', status=403)
+
+def handler404(request, exception):
     return render(request, '404.html', status=404)
 
 def handler500(request):

@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 import importlib
 import subprocess
@@ -20,11 +21,23 @@ from app.security import path_traversal_check
 
 logger = logging.getLogger('app.logger')
 
+# Add additional python path to discover plugins
+if not settings.MEDIA_ROOT in sys.path:
+    sys.path.append(settings.MEDIA_ROOT)
+
 def init_plugins():
     # Make sure app/media/plugins exists
     if not os.path.exists(get_plugins_persistent_path()):
         os.mkdir(get_plugins_persistent_path())
 
+    # Make sure app/media/plugins is importable as a module
+    if not os.path.isfile(os.path.join(get_plugins_persistent_path(), "__init__.py")):
+        try:
+            with open(os.path.join(get_plugins_persistent_path(), "__init__.py"), 'w') as f:
+                f.write("\n")
+        except Exception as e:
+            logger.warning("Cannot create __init__.py: %s" % str(e))
+    
     build_plugins()
     sync_plugin_db()
     register_plugins()
@@ -72,14 +85,17 @@ def build_plugins():
     for plugin in get_plugins():
         # Check for package.json in public directory
         # and run npm install if needed
-        if plugin.path_exists("public/package.json") and not plugin.path_exists("public/node_modules"):
+        if plugin.path_exists("public", "package.json") and not plugin.path_exists("public", "node_modules") and not plugin.path_exists("public", "build"):
             logger.info("Running npm install for {}".format(plugin))
 
             try:
                 npm = "npm"
                 if platform.system() == "Windows":
                     npm = "npm.cmd"
-                subprocess.call([npm, 'install'], cwd=plugin.get_path("public"))
+                command = [npm, 'install']
+                if plugin.is_persistent():
+                    command.append('--ignore-scripts')
+                subprocess.call(command, cwd=plugin.get_path("public"))
             except FileNotFoundError:
                 logger.warn("npm is not installed, will skip this plugin")
                 continue
@@ -97,7 +113,7 @@ def build_plugins():
                     # Create entry configuration
                     entry = {}
                     for e in plugin.build_jsx_components():
-                        entry[os.path.splitext(os.path.basename(e))[0]] = [os.path.join('.', e)]
+                        entry[os.path.splitext(os.path.basename(e))[0]] = ['./' + e]
                     wpc_content = tmpl.substitute({
                         'entry_json': json.dumps(entry)
                     })
@@ -110,10 +126,10 @@ def build_plugins():
 
         # Check for webpack.config.js (if we need to build it)
         if plugin.path_exists("public/webpack.config.js"):
-            if settings.DEV and webpack_watch_process_count() <= 2:
+            if settings.DEV and webpack_watch_process_count() <= 2 and settings.DEV_WATCH_PLUGINS:
                 logger.info("Running webpack with watcher for {}".format(plugin.get_name()))
                 subprocess.Popen(['webpack-cli', '--watch'], cwd=plugin.get_path("public"))
-            elif not plugin.path_exists("public/build"):
+            elif not plugin.path_exists("public", "build"):
                 logger.info("Running webpack for {}".format(plugin.get_name()))
 
                 try:
@@ -194,12 +210,15 @@ def get_plugins():
                     if settings.TESTING:
                         module = importlib.import_module("app.media_test.plugins.{}".format(dir))
                     else:
-                        module = importlib.import_module("app.media.plugins.{}".format(dir))
+                        module = importlib.import_module("plugins.{}".format(dir))
 
                     plugin = (getattr(module, "Plugin"))()
-                except (ImportError, AttributeError):
-                    module = importlib.import_module("plugins.{}".format(dir))
-                    plugin = (getattr(module, "Plugin"))()
+                except (ImportError, AttributeError) as plugin_error:
+                    try:
+                        module = importlib.import_module("coreplugins.{}".format(dir))
+                        plugin = (getattr(module, "Plugin"))()
+                    except (ImportError, AttributeError) as coreplugin_error:
+                        raise coreplugin_error from plugin_error
 
                 # Check version
                 manifest = plugin.get_manifest()
@@ -224,7 +243,7 @@ def get_plugins():
 
                 plugins.append(plugin)
             except Exception as e:
-                logger.warning("Failed to instantiate plugin {}: {}".format(dir, e))
+                logger.warning("Failed to instantiate plugin {}: {}: {}".format(dir, e, e.__cause__))
 
     return plugins
 
@@ -260,7 +279,7 @@ def get_plugin_by_name(name, only_active=True, refresh_cache_if_none=False):
     else:
         return res
 
-def get_current_plugin():
+def get_current_plugin(only_active=False):
     """
     When called from a python module inside a plugin's directory,
     it returns the plugin that this python module belongs to
@@ -276,7 +295,7 @@ def get_current_plugin():
         parts = relp.split(os.sep)
         if len(parts) > 0:
             plugin_name = parts[0]
-            return get_plugin_by_name(plugin_name, only_active=False)
+            return get_plugin_by_name(plugin_name, only_active=only_active)
 
     return None
 
@@ -284,7 +303,7 @@ def get_plugins_paths():
     current_path = os.path.dirname(os.path.realpath(__file__))
     return [
         os.path.abspath(get_plugins_persistent_path()),
-        os.path.abspath(os.path.join(current_path, "..", "..", "plugins")),
+        os.path.abspath(os.path.join(current_path, "..", "..", "coreplugins")),
     ]
 
 def get_plugins_persistent_path(*paths):
@@ -311,10 +330,24 @@ def get_dynamic_script_handler(script_path, callback=None, **kwargs):
 def enable_plugin(plugin_name):
     p = get_plugin_by_name(plugin_name, only_active=False)
     p.register()
+    try:
+        p.enable()
+    except Exception as e:
+        logger.warning(f"Plugin: {plugin_name} enable error: {str(e)}")
+        raise  # Propagate error to UI
     Plugin.objects.get(pk=plugin_name).enable()
+    return p
 
 def disable_plugin(plugin_name):
+    p = get_plugin_by_name(plugin_name, only_active=False)
+    try:
+        p.disable()
+    except Exception as e:
+        logger.warning(f"Plugin: {plugin_name} disable error: {str(e)}")
+        Plugin.objects.get(pk=plugin_name).disable()
+        raise # Propagate error to UI
     Plugin.objects.get(pk=plugin_name).disable()
+    return p
 
 def delete_plugin(plugin_name):
     Plugin.objects.get(pk=plugin_name).delete()

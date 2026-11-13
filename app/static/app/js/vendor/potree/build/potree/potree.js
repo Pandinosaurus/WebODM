@@ -52173,7 +52173,7 @@
 			this.boundingBox = this.sphere.geometry.boundingBox;
 			this.add(this.sphere);
 
-			this.label.visible = false;
+			this.label.visible = true;
 
 
 			let frameGeometry = new Geometry();
@@ -54096,18 +54096,69 @@
 			this.update();
 		};
 
-		getArea () {
-			let area = 0;
-			let j = this.points.length - 1;
+		// getArea () {
+		// 	let area = 0;
+		// 	let j = this.points.length - 1;
+		// 	for (let i = 0; i < this.points.length; i++) {
+		// 		let p0 = this.points[0].position;
+		// 		let p1 = this.points[i].position;
+		// 		let p2 = this.points[j].position;
+		// 		let a = (p2.y - p0.y) * (p1.z - p0.z) - (p2.z - p0.z) * (p1.y - p0.y);
+		// 		let b = (p2.x - p0.x) * (p1.z - p0.z) - (p2.z - p0.z) * (p1.x - p0.x);
+		// 		let c = (p2.x - p0.x) * (p1.y - p0.y) - (p2.y - p0.y) * (p1.x - p0.x);
+		// 		area += Math.sqrt(a * a + b * b + c * c);
+		// 		j = i;
+		// 	}
+		// 	return Math.abs(area / 2);
+		// };
 
-			for (let i = 0; i < this.points.length; i++) {
-				let p1 = this.points[i].position;
-				let p2 = this.points[j].position;
-				area += (p2.x + p1.x) * (p1.y - p2.y);
-				j = i;
+		getArea() {
+			if (this.points.length < 3) {
+				return 0;
 			}
 
-			return Math.abs(area / 2);
+			let areaVectorX = 0;
+			let areaVectorY = 0;
+			let areaVectorZ = 0;
+
+			const P0 = this.points[0].position;
+			const n = this.points.length;
+
+			// Loop through triangles P0, P_i, P_{i+1}. 
+			// The loop runs from i=1 up to n-1 (the second-to-last vertex).
+			// The vertices used are P0, P_i, and P_{i+1} (which wraps around using the modulo operator).
+			for (let i = 1; i < n; i++) {
+				// P_i (current vertex)
+				const Pi = this.points[i].position; 
+				
+				// P_{i+1} (next vertex)
+				const PiNext = this.points[(i + 1) % n].position; 
+
+				// Vector V01 = P_i - P0
+				const V0iX = Pi.x - P0.x;
+				const V0iY = Pi.y - P0.y;
+				const V0iZ = Pi.z - P0.z;
+
+				// Vector V02 = P_{i+1} - P0
+				const V0iNextX = PiNext.x - P0.x;
+				const V0iNextY = PiNext.y - P0.y;
+				const V0iNextZ = PiNext.z - P0.z;
+
+				// Calculate the Cross Product V0i x V0iNext = (a, b, c)
+				
+				const crossX = (V0iY * V0iNextZ) - (V0iZ * V0iNextY);
+				const crossY = (V0iZ * V0iNextX) - (V0iX * V0iNextZ);
+				const crossZ = (V0iX * V0iNextY) - (V0iY * V0iNextX);
+
+				// Sum the components of the cross product (area vector)
+				areaVectorX += crossX;
+				areaVectorY += crossY;
+				areaVectorZ += crossZ;
+			}
+
+			// The final area is half the magnitude of the resulting area vector.
+			// area = sqrt(Ax^2 + Ay^2 + Az^2) / 2.0
+			return Math.sqrt(areaVectorX * areaVectorX + areaVectorY * areaVectorY + areaVectorZ * areaVectorZ) / 2.0;
 		};
 
 		getTotalDistance () {
@@ -54185,7 +54236,8 @@
 				{ // coordinate labels
 					let coordinateLabel = this.coordinateLabels[0];
 					
-					let msg = position.toArray().map(p => Utils.addCommas(p.toFixed(2))).join(" / ");
+					let positions = position.toArray();
+					let msg = `${Utils.addCommas(positions[0].toFixed(3))} / ${Utils.addCommas(positions[1].toFixed(3))} / ${Utils.addCommas((positions[2] / window.viewer.lengthUnit.unitspermeter * window.viewer.lengthUnitDisplay.unitspermeter).toFixed(3))}`;
 					coordinateLabel.setText(msg);
 
 					coordinateLabel.visible = this.showCoordinates;
@@ -54354,8 +54406,8 @@
 					const N = AC.clone().cross(AB).normalize();
 
 					const center = Potree.Utils.computeCircleCenter(A, B, C);
-					const radius = center.distanceTo(A);
-
+					let radius = center.distanceTo(A);
+					if (isNaN(radius)) radius = 0;
 
 					const scale = radius / 20;
 					circleCenter.position.copy(center);
@@ -54378,11 +54430,16 @@
 					circleLine.position.copy(center);
 					circleLine.scale.set(radius, radius, radius);
 					circleLine.lookAt(target);
+
+					let suffix = "";
+					if(this.lengthUnit != null && this.lengthUnitDisplay != null){
+						radius = radius / this.lengthUnit.unitspermeter * this.lengthUnitDisplay.unitspermeter;
+						suffix = this.lengthUnitDisplay.code;
+					}
 					
 					circleRadiusLabel.visible = true;
 					circleRadiusLabel.position.copy(center.clone().add(B).multiplyScalar(0.5));
-					circleRadiusLabel.setText(`${radius.toFixed(3)}`);
-
+					circleRadiusLabel.setText(`${radius.toFixed(3)} ${suffix}`);
 				}
 			}
 
@@ -55669,6 +55726,7 @@
 			this.scene = null;
 			this._title = args.title || 'No Title';
 			this._description = args.description || '';
+			this._link = args.link || '';
 			this.offset = new Vector3();
 			this.uuid = MathUtils.generateUUID();
 
@@ -55719,16 +55777,36 @@
 
 			this.elTitlebar = this.domElement.find('.annotation-titlebar');
 			this.elTitle = this.elTitlebar.find('.annotation-label');
-			this.elTitle.append(this._title);
+			this.elTitle.text(this._title);
 			this.elDescription = this.domElement.find('.annotation-description');
 			this.elDescriptionClose = this.elDescription.find('.annotation-description-close');
 			// this.elDescriptionContent = this.elDescription.find(".annotation-description-content");
+			this.elLink = this.domElement.find('.annotation-link');
+			this.elLink.text(this._link);
 
 			this.clickTitle = () => {
 				if(this.hasView()){
 					this.moveHere(this.scene.getActiveCamera());
 				}
 				this.dispatchEvent({type: 'click', target: this});
+
+				if (this._link){
+					try{
+						const url = new URL(this._link);
+						if (url.protocol === 'http:' || url.protocol === 'https:'){
+							const isExternal = url.hostname !== window.location.hostname;
+							let proceed = true;
+							if (isExternal) {
+								proceed = confirm(`You are leaving this site to go to ${url.hostname}. Do you want to continue?`);
+							}
+							if (proceed) {
+								window.open(url.toString(), '_blank', 'noopener,noreferrer');
+							}
+						}
+					}catch(err){
+						// pass
+					}
+				}
 			};
 
 			this.elTitle.click(this.clickTitle);
@@ -56002,7 +56080,7 @@
 
 			this._title = title;
 			this.elTitle.empty();
-			this.elTitle.append(this._title);
+			this.elTitle.text(this._title);
 
 			this.dispatchEvent({
 				type: "annotation_changed",
@@ -56023,7 +56101,26 @@
 
 			const elDescriptionContent = this.elDescription.find(".annotation-description-content");
 			elDescriptionContent.empty();
-			elDescriptionContent.append(this._description);
+			elDescriptionContent.text(this._description);
+
+			this.dispatchEvent({
+				type: "annotation_changed",
+				annotation: this,
+			});
+		}
+
+		get link () {
+			return this._link;
+		}
+
+		set link (link) {
+			if (this._link === link) {
+				return;
+			}
+
+			this._link = link;
+			this.elLink.empty();
+			this.elLink.text(this._link);
 
 			this.dispatchEvent({
 				type: "annotation_changed",
@@ -56145,7 +56242,7 @@
 
 				if (this._description) {
 					this.descriptionVisible = true;
-					this.elDescription.fadeIn(200);
+					this.elDescription.fadeIn(1);
 					this.elDescription.css('position', 'relative');
 				}
 			} else {
@@ -56160,6 +56257,7 @@
 		}
 
 		hasView () {
+			if (!this.cameraTarget) return false;
 			let hasPosTargetView = this.cameraTarget.x != null;
 			hasPosTargetView = hasPosTargetView && this.cameraPosition.x != null;
 
@@ -56320,7 +56418,8 @@
 
 	const LengthUnits = {
 		METER: {code: 'm', unitspermeter: 1.0},
-		FEET: {code: 'ft', unitspermeter: 3.28084},
+		FEET: {code: 'ft', unitspermeter: 1.0 / 0.3048},
+		FEET_US: {code: 'ft (US)', unitspermeter: 3937 / 1200},
 		INCH: {code: '\u2033', unitspermeter: 39.3701}
 	};
 
@@ -56363,6 +56462,9 @@
 					supported = supported && gl.getExtension('EXT_frag_depth');
 					supported = supported && gl.getParameter(gl.MAX_VARYING_VECTORS) >= 8;
 
+					// EXT_frag_depth is core in WebGL2 (getExtension returns null)
+					supported = supported || (typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext);
+
 					return supported;
 				}
 			},
@@ -56373,6 +56475,10 @@
 					supported = supported && gl.getExtension('EXT_frag_depth');
 					supported = supported && gl.getExtension('OES_texture_float');
 					supported = supported && gl.getParameter(gl.MAX_VARYING_VECTORS) >= 8;
+
+					// EXT_frag_depth and OES_texture_float are core in WebGL2
+					// (getExtension returns null for them)
+					supported = supported || (typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext);
 
 					return supported;
 				}
@@ -56386,7 +56492,9 @@
 					supported = supported && gl.getExtension('OES_texture_float');
 					supported = supported && gl.getParameter(gl.MAX_VARYING_VECTORS) >= 8;
 
-					//supported = supported || (gl instanceof WebGL2RenderingContext);
+					// EXT_frag_depth and OES_texture_float are core in WebGL2
+					// (getExtension returns null for them)
+					supported = supported || (typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext);
 
 					return supported;
 				}
@@ -56837,7 +56945,7 @@
 				this.projection = info.srs.authority + ':' + info.srs.horizontal;
 			}
 
-			if (info.srs.wkt) {
+			if (info.srs && info.srs.wkt) {
 				if (!this.projection) this.projection = info.srs.wkt;
 				else this.fallbackProjection = info.srs.wkt;
 			}
@@ -57533,25 +57641,25 @@
 
 	let Shaders = {};
 
-	Shaders["pointcloud.vs"] = `
+	Shaders["pointcloud.vs"] = `#version 300 es
 precision highp float;
 precision highp int;
 
 #define max_clip_polygons 8
 #define PI 3.141592653589793
 
-attribute vec3 position;
-attribute vec3 color;
-attribute float intensity;
-attribute float classification;
-attribute float returnNumber;
-attribute float numberOfReturns;
-attribute float pointSourceID;
-attribute vec4 indices;
-attribute float spacing;
-attribute float gpsTime;
-attribute vec3 normal;
-attribute float aExtra;
+in vec3 position;
+in vec3 color;
+in float intensity;
+in float classification;
+in float returnNumber;
+in float numberOfReturns;
+in float pointSourceID;
+in vec4 indices;
+in float spacing;
+in float gpsTime;
+in vec3 normal;
+in float aExtra;
 
 uniform mat4 modelMatrix;
 uniform mat4 modelViewMatrix;
@@ -57593,6 +57701,10 @@ uniform int clipMethod;
 	uniform int uClipPolygonVCount[num_clippolygons];
 	uniform vec3 uClipPolygonVertices[num_clippolygons * 8];
 	uniform mat4 uClipPolygonWVP[num_clippolygons];
+#endif
+
+#if defined(num_cropvertices) && num_cropvertices > 0
+	uniform vec2 uCropVertices[num_cropvertices];
 #endif
 
 
@@ -57658,16 +57770,14 @@ uniform mat4 uShadowWorldView[num_shadowmaps];
 uniform mat4 uShadowProj[num_shadowmaps];
 #endif
 
-varying vec3	vColor;
-varying float	vLogDepth;
-varying vec3	vViewPosition;
-varying float 	vRadius;
-varying float 	vPointSize;
+out vec3	vColor;
+out float	vLogDepth;
+out vec3	vViewPosition;
+out float 	vRadius;
+out float 	vPointSize;
 
 
-float round(float number){
-	return floor(number + 0.5);
-}
+// round() is a built-in in GLSL ES 3.00
 
 // 
 //    ###    ########     ###    ########  ######## #### ##     ## ########     ######  #### ######## ########  ######  
@@ -57760,7 +57870,7 @@ float getLOD(){
 		index3d = floor(index3d + 0.5);
 		int index = int(round(4.0 * index3d.x + 2.0 * index3d.y + index3d.z));
 		
-		vec4 value = texture2D(visibleNodes, vec2(float(iOffset) / 2048.0, 0.0));
+		vec4 value = texture(visibleNodes, vec2(float(iOffset) / 2048.0, 0.0));
 		int mask = int(round(value.r * 255.0));
 
 		if(isBitSet(mask, index)){
@@ -57800,7 +57910,7 @@ float getSpacing(){
 		index3d = floor(index3d + 0.5);
 		int index = int(round(4.0 * index3d.x + 2.0 * index3d.y + index3d.z));
 		
-		vec4 value = texture2D(visibleNodes, vec2(float(iOffset) / 2048.0, 0.0));
+		vec4 value = texture(visibleNodes, vec2(float(iOffset) / 2048.0, 0.0));
 		int mask = int(round(value.r * 255.0));
 		float spacingFactor = value.a;
 
@@ -57858,7 +57968,7 @@ float getLOD(){
 		
 	for(float i = 0.0; i <= 1000.0; i++){
 		
-		vec4 value = texture2D(visibleNodes, vec2(iOffset / 2048.0, 0.0));
+		vec4 value = texture(visibleNodes, vec2(iOffset / 2048.0, 0.0));
 		
 		int children = int(value.r * 255.0);
 		float next = value.g * 255.0;
@@ -57955,13 +58065,13 @@ vec3 getGpsTime(){
 	float w = (gpsTime + uGpsOffset) * uGpsScale;
 
 
-	vec3 c = texture2D(gradient, vec2(w, 1.0 - w)).rgb;
+	vec3 c = texture(gradient, vec2(w, 1.0 - w)).rgb;
 
 
 	// vec2 r = uNormalizedGpsBufferRange;
 	// float w = gpsTime * (r.y - r.x) + r.x;
 	// w = clamp(w, 0.0, 1.0);
-	// vec3 c = texture2D(gradient, vec2(w,1.0-w)).rgb;
+	// vec3 c = texture(gradient, vec2(w,1.0-w)).rgb;
 	
 	return c;
 }
@@ -57969,14 +58079,14 @@ vec3 getGpsTime(){
 vec3 getElevation(){
 	vec4 world = modelMatrix * vec4( position, 1.0 );
 	float w = (world.z - elevationRange.x) / (elevationRange.y - elevationRange.x);
-	vec3 cElevation = texture2D(gradient, vec2(w,1.0-w)).rgb;
+	vec3 cElevation = texture(gradient, vec2(w,1.0-w)).rgb;
 	
 	return cElevation;
 }
 
 vec4 getClassification(){
 	vec2 uv = vec2(classification / 255.0, 0.5);
-	vec4 classColor = texture2D(classificationLUT, uv);
+	vec4 classColor = texture(classificationLUT, uv);
 	
 	return classColor;
 }
@@ -58040,14 +58150,14 @@ vec3 getNumberOfReturns(){
 
 	float w = value / 6.0;
 
-	vec3 color = texture2D(gradient, vec2(w, 1.0 - w)).rgb;
+	vec3 color = texture(gradient, vec2(w, 1.0 - w)).rgb;
 
 	return color;
 }
 
 vec3 getSourceID(){
 	float w = mod(pointSourceID, 10.0) / 10.0;
-	return texture2D(gradient, vec2(w,1.0 - w)).rgb;
+	return texture(gradient, vec2(w,1.0 - w)).rgb;
 }
 
 vec3 getCompositeColor(){
@@ -58111,7 +58221,7 @@ vec3 getMatcap(){
 	vec3 r_en = reflect( eye, getNormal() ); // or r_en = e - 2. * dot( n, e ) * n;
 	float m = 2. * sqrt(pow( r_en.x, 2. ) + pow( r_en.y, 2. ) + pow( r_en.z + 1., 2. ));
 	vec2 vN = r_en.xy / m + .5;
-	return texture2D(matcapTextureUniform, vN).rgb; 
+	return texture(matcapTextureUniform, vN).rgb; 
 }
 #endif
 
@@ -58120,7 +58230,7 @@ vec3 getExtra(){
 	float w = (aExtra + uExtraOffset) * uExtraScale;
 	w = clamp(w, 0.0, 1.0);
 
-	vec3 color = texture2D(gradient, vec2(w,1.0-w)).rgb;
+	vec3 color = texture(gradient, vec2(w,1.0-w)).rgb;
 
 	// vec2 r = uExtraNormalizedRange;
 
@@ -58130,7 +58240,7 @@ vec3 getExtra(){
 
 	// w = clamp(w, 0.0, 1.0);
 
-	// vec3 color = texture2D(gradient, vec2(w,1.0-w)).rgb;
+	// vec3 color = texture(gradient, vec2(w,1.0-w)).rgb;
 
 	return color;
 }
@@ -58157,13 +58267,13 @@ vec3 getColor(){
 		color = getGpsTime();
 	#elif defined color_type_intensity_gradient
 		float w = getIntensity();
-		color = texture2D(gradient, vec2(w,1.0-w)).rgb;
+		color = texture(gradient, vec2(w,1.0-w)).rgb;
 	#elif defined color_type_color
 		color = uColor;
 	#elif defined color_type_level_of_detail
 		float depth = getLOD();
 		float w = depth / 10.0;
-		color = texture2D(gradient, vec2(w,1.0-w)).rgb;
+		color = texture(gradient, vec2(w,1.0-w)).rgb;
 	#elif defined color_type_indices
 		color = indices.rgb;
 	#elif defined color_type_classification
@@ -58238,6 +58348,21 @@ float getPointSize(){
 
 	return pointSize;
 }
+
+#if defined(num_cropvertices) && num_cropvertices > 0
+bool pointInCropPolygon(vec3 point) {
+  int j = num_cropvertices - 1;
+  bool c = false;
+  for (int i = 0; i < num_cropvertices; i++) {
+    if ( ((uCropVertices[i].y>point.y) != (uCropVertices[j].y>point.y)) &&
+		 (point.x<(uCropVertices[j].x-uCropVertices[i].x) * (point.y-uCropVertices[i].y) / (uCropVertices[j].y-uCropVertices[i].y) + uCropVertices[i].x) ){
+       c = !c;
+	}
+	j = i;
+  }
+  return c;
+}
+#endif
 
 #if defined(num_clippolygons) && num_clippolygons > 0
 bool pointInClipPolygon(vec3 point, int polyIdx) {
@@ -58351,6 +58476,16 @@ void doClipping(){
 		}	
 	#endif
 
+	#if defined(num_cropvertices) && num_cropvertices > 0
+		// vec4 worldPos = modelMatrix * vec4(position, 1.0);
+
+		if (!pointInCropPolygon(position)){
+			gl_Position = vec4(100.0, 100.0, 100.0, 0.0);
+			return;
+		}
+	#endif
+
+
 	#if defined(num_clippolygons) && num_clippolygons > 0
 		for(int i = 0; i < num_clippolygons; i++) {
 			bool inside = pointInClipPolygon(position, i);
@@ -58446,7 +58581,7 @@ void main() {
 
 			if(distance < 1.0){
 				float w = distance;
-				vec3 cGradient = texture2D(gradient, vec2(w, 1.0 - w)).rgb;
+				vec3 cGradient = texture(gradient, vec2(w, 1.0 - w)).rgb;
 				
 				vColor = cGradient;
 				//vColor = cGradient * 0.7 + vColor * 0.3;
@@ -58488,7 +58623,7 @@ void main() {
 			float bias = vRadius * 2.0;
 
 			for(int j = 0; j < 9; j++){
-				vec4 depthMapValue = texture2D(uShadowMap[i], vec2(u, v) + sampleLocations[j]);
+				vec4 depthMapValue = texture(uShadowMap[i], vec2(u, v) + sampleLocations[j]);
 
 				float linearDepthFromSM = depthMapValue.x + bias;
 				float linearDepthFromViewer = distanceToLight;
@@ -58516,13 +58651,11 @@ void main() {
 }
 `;
 
-	Shaders["pointcloud.fs"] = `
-#if defined paraboloid_point_shape
-	#extension GL_EXT_frag_depth : enable
-#endif
-
+	Shaders["pointcloud.fs"] = `#version 300 es
 precision highp float;
 precision highp int;
+
+out vec4 fragColor;
 
 uniform mat4 viewMatrix;
 uniform mat4 uViewInv;
@@ -58543,19 +58676,19 @@ uniform float uPCIndex;
 uniform float uScreenWidth;
 uniform float uScreenHeight;
 
-varying vec3	vColor;
-varying float	vLogDepth;
-varying vec3	vViewPosition;
-varying float	vRadius;
-varying float 	vPointSize;
-varying vec3 	vPosition;
+in vec3	vColor;
+in float	vLogDepth;
+in vec3	vViewPosition;
+in float	vRadius;
+in float 	vPointSize;
+in vec3 	vPosition;
 
 
 float specularStrength = 1.0;
 
 void main() {
 
-	// gl_FragColor = vec4(vColor, 1.0);
+	// fragColor = vec4(vColor, 1.0);
 
 	vec3 color = vColor;
 	float depth = gl_FragCoord.z;
@@ -58573,9 +58706,9 @@ void main() {
 	#endif
 		
 	#if defined color_type_indices
-		gl_FragColor = vec4(color, uPCIndex / 255.0);
+		fragColor = vec4(color, uPCIndex / 255.0);
 	#else
-		gl_FragColor = vec4(color, uOpacity);
+		fragColor = vec4(color, uOpacity);
 	#endif
 
 	#if defined paraboloid_point_shape
@@ -58587,7 +58720,7 @@ void main() {
 		pos = pos / pos.w;
 		float expDepth = pos.z;
 		depth = (pos.z + 1.0) / 2.0;
-		gl_FragDepthEXT = depth;
+		gl_FragDepth = depth;
 		
 		#if defined(color_type_depth)
 			color.r = linearDepth;
@@ -58595,12 +58728,12 @@ void main() {
 		#endif
 		
 		#if defined(use_edl)
-			gl_FragColor.a = log2(linearDepth);
+			fragColor.a = log2(linearDepth);
 		#endif
 		
 	#else
 		#if defined(use_edl)
-			gl_FragColor.a = vLogDepth;
+			fragColor.a = vLogDepth;
 		#endif
 	#endif
 
@@ -58609,11 +58742,11 @@ void main() {
 		float weight = max(0.0, 1.0 - distance);
 		weight = pow(weight, 1.5);
 
-		gl_FragColor.a = weight;
-		gl_FragColor.xyz = gl_FragColor.xyz * weight;
+		fragColor.a = weight;
+		fragColor.xyz = fragColor.xyz * weight;
 	#endif
 
-	//gl_FragColor = vec4(0.0, 0.7, 0.0, 1.0);
+	//fragColor = vec4(0.0, 0.7, 0.0, 1.0);
 	
 }
 
@@ -58787,13 +58920,13 @@ void main() {
 precision mediump float;
 precision mediump int;
 
-attribute vec3 position;
-attribute vec2 uv;
+in vec3 position;
+in vec2 uv;
 
 uniform mat4 projectionMatrix;
 uniform mat4 modelViewMatrix;
 
-varying vec2 vUv;
+out vec2 vUv;
 
 void main() {
 	vUv = uv;
@@ -58801,39 +58934,37 @@ void main() {
 }`;
 
 	Shaders["normalize.fs"] = `
-#extension GL_EXT_frag_depth : enable
-
 precision mediump float;
 precision mediump int;
 
 uniform sampler2D uWeightMap;
 uniform sampler2D uDepthMap;
 
-varying vec2 vUv;
+in vec2 vUv;
+
+out vec4 fragColor;
 
 void main() {
-	float depth = texture2D(uDepthMap, vUv).r;
-	
+	float depth = texture(uDepthMap, vUv).r;
+
 	if(depth >= 1.0){
 		discard;
 	}
 
-	gl_FragColor = vec4(depth, 1.0, 0.0, 1.0);
+	fragColor = vec4(depth, 1.0, 0.0, 1.0);
 
-	vec4 color = texture2D(uWeightMap, vUv); 
+	vec4 color = texture(uWeightMap, vUv);
 	color = color / color.w;
-	
-	gl_FragColor = vec4(color.xyz, 1.0); 
-	
-	gl_FragDepthEXT = depth;
+
+	fragColor = vec4(color.xyz, 1.0);
+
+	gl_FragDepth = depth;
 
 
 }`;
 
 	Shaders["normalize_and_edl.fs"] = `
-#extension GL_EXT_frag_depth : enable
-
-// 
+//
 // adapted from the EDL shader code from Christian Boucheny in cloud compare:
 // https://github.com/cloudcompare/trunk/tree/master/plugins/qEDL/shaders/EDL
 //
@@ -58851,17 +58982,19 @@ uniform vec2 neighbours[NEIGHBOUR_COUNT];
 uniform float edlStrength;
 uniform float radius;
 
-varying vec2 vUv;
+in vec2 vUv;
+
+out vec4 fragColor;
 
 float response(float depth){
 	vec2 uvRadius = radius / vec2(screenWidth, screenHeight);
-	
+
 	float sum = 0.0;
-	
+
 	for(int i = 0; i < NEIGHBOUR_COUNT; i++){
 		vec2 uvNeighbor = vUv + uvRadius * neighbours[i];
-		
-		float neighbourDepth = texture2D(uEDLMap, uvNeighbor).a;
+
+		float neighbourDepth = texture(uEDLMap, uvNeighbor).a;
 
 		if(neighbourDepth != 0.0){
 			if(depth == 0.0){
@@ -58871,54 +59004,52 @@ float response(float depth){
 			}
 		}
 	}
-	
+
 	return sum / float(NEIGHBOUR_COUNT);
 }
 
 void main() {
 
-	float edlDepth = texture2D(uEDLMap, vUv).a;
+	float edlDepth = texture(uEDLMap, vUv).a;
 	float res = response(edlDepth);
 	float shade = exp(-res * 300.0 * edlStrength);
 
-	float depth = texture2D(uDepthMap, vUv).r;
+	float depth = texture(uDepthMap, vUv).r;
 	if(depth >= 1.0 && res == 0.0){
 		discard;
 	}
-	
-	vec4 color = texture2D(uWeightMap, vUv); 
+
+	vec4 color = texture(uWeightMap, vUv);
 	color = color / color.w;
 	color = color * shade;
 
-	gl_FragColor = vec4(color.xyz, 1.0); 
+	fragColor = vec4(color.xyz, 1.0);
 
-	gl_FragDepthEXT = depth;
+	gl_FragDepth = depth;
 }`;
 
 	Shaders["edl.vs"] = `
 precision mediump float;
 precision mediump int;
 
-attribute vec3 position;
-attribute vec2 uv;
+in vec3 position;
+in vec2 uv;
 
 uniform mat4 projectionMatrix;
 uniform mat4 modelViewMatrix;
 
-varying vec2 vUv;
+out vec2 vUv;
 
 void main() {
 	vUv = uv;
-	
+
 	vec4 mvPosition = modelViewMatrix * vec4(position,1.0);
 
 	gl_Position = projectionMatrix * mvPosition;
 }`;
 
 	Shaders["edl.fs"] = `
-#extension GL_EXT_frag_depth : enable
-
-// 
+//
 // adapted from the EDL shader code from Christian Boucheny in cloud compare:
 // https://github.com/cloudcompare/trunk/tree/master/plugins/qEDL/shaders/EDL
 //
@@ -58941,17 +59072,19 @@ uniform mat4 uProj;
 uniform sampler2D uEDLColor;
 uniform sampler2D uEDLDepth;
 
-varying vec2 vUv;
+in vec2 vUv;
+
+out vec4 fragColor;
 
 float response(float depth){
 	vec2 uvRadius = radius / vec2(screenWidth, screenHeight);
-	
+
 	float sum = 0.0;
-	
+
 	for(int i = 0; i < NEIGHBOUR_COUNT; i++){
 		vec2 uvNeighbor = vUv + uvRadius * neighbours[i];
-		
-		float neighbourDepth = texture2D(uEDLColor, uvNeighbor).a;
+
+		float neighbourDepth = texture(uEDLColor, uvNeighbor).a;
 		neighbourDepth = (neighbourDepth == 1.0) ? 0.0 : neighbourDepth;
 
 		if(neighbourDepth != 0.0){
@@ -58962,19 +59095,26 @@ float response(float depth){
 			}
 		}
 	}
-	
+
 	return sum / float(NEIGHBOUR_COUNT);
 }
 
 void main(){
-	vec4 cEDL = texture2D(uEDLColor, vUv);
-	
+	// Fully transparent: don't write color nor depth values
+	// (the point cloud might be hidden to display other models,
+	// e.g. gaussian splats, that render into the same buffers)
+	if(opacity == 0.0){
+		discard;
+	}
+
+	vec4 cEDL = texture(uEDLColor, vUv);
+
 	float depth = cEDL.a;
 	depth = (depth == 1.0) ? 0.0 : depth;
 	float res = response(depth);
 	float shade = exp(-res * 300.0 * edlStrength);
 
-	gl_FragColor = vec4(cEDL.rgb * shade, opacity);
+	fragColor = vec4(cEDL.rgb * shade, opacity);
 
 	{ // write regular hyperbolic depth values to depth buffer
 		float dl = pow(2.0, depth);
@@ -58983,7 +59123,7 @@ void main(){
 		float pz = dp.z / dp.w;
 		float fragDepth = (pz + 1.0) / 2.0;
 
-		gl_FragDepthEXT = fragDepth;
+		gl_FragDepth = fragDepth;
 	}
 
 	if(depth == 0.0){
@@ -63190,6 +63330,18 @@ void main() {
 					}
 				}
 
+				if (material.cropVertices && material.cropVertices.length > 0){
+					let flattenedVertices = new Array(2 * material.cropVertices.length);
+					for(let i = 0; i < material.cropVertices.length; i++){
+						// We simply subtract the translation elements from the world matrix
+						// since we know that the other parameters are the identity matrix
+						flattenedVertices[i * 2 + 0] = material.cropVertices[i].x - world.elements[12];
+						flattenedVertices[i * 2 + 1] = material.cropVertices[i].y - world.elements[13];
+					}
+					const lCropVertices = shader.uniformLocations["uCropVertices[0]"];
+					gl.uniform2fv(lCropVertices, flattenedVertices);
+				}
+
 
 				//shader.setUniformMatrix4("modelMatrix", world);
 				//shader.setUniformMatrix4("modelViewMatrix", worldView);
@@ -63477,6 +63629,7 @@ void main() {
 					let numClipBoxes = (material.clipBoxes && material.clipBoxes.length) ? material.clipBoxes.length : 0;
 					let numClipSpheres = (params.clipSpheres && params.clipSpheres.length) ? params.clipSpheres.length : 0;
 					let numClipPolygons = (material.clipPolygons && material.clipPolygons.length) ? material.clipPolygons.length : 0;
+					let numCropVertices = (material.cropVertices && material.cropVertices.length) ? material.cropVertices.length : 0;
 
 					let defines = [
 						`#define num_shadowmaps ${shadowMaps.length}`,
@@ -63484,6 +63637,7 @@ void main() {
 						`#define num_clipboxes ${numClipBoxes}`,
 						`#define num_clipspheres ${numClipSpheres}`,
 						`#define num_clippolygons ${numClipPolygons}`,
+						`#define num_cropvertices ${numCropVertices}`,
 					];
 
 
@@ -64456,6 +64610,7 @@ void main() {
 			uuid: annotation.uuid,
 			title: annotation.title.toString(),
 			description: annotation.description,
+			link: annotation.link,
 			position: annotation.position.toArray(),
 			offset: annotation.offset.toArray(),
 			children: [],
@@ -65327,6 +65482,7 @@ void main() {
 
 
 		annotation.description = item.description;
+		annotation.link = item.link;
 		annotation.uuid = item.uuid;
 
 		if(item.offset){
@@ -65507,7 +65663,7 @@ void main() {
 		}
 
 		getDefines() {
-			let defines = '';
+			let defines = '#version 300 es\n';
 
 			defines += '#define NEIGHBOUR_COUNT ' + this.neighbourCount + '\n';
 
@@ -65575,7 +65731,7 @@ void main() {
 		}
 
 		getDefines() {
-			let defines = '';
+			let defines = '#version 300 es\n';
 
 			defines += '#define NEIGHBOUR_COUNT ' + this.neighbourCount + '\n';
 
@@ -65634,7 +65790,7 @@ void main() {
 		}
 
 		getDefines() {
-			let defines = '';
+			let defines = '#version 300 es\n';
 
 			return defines;
 		}
@@ -67901,13 +68057,13 @@ void main() {
 					this.viewer.scene.removePolygonClipVolume(polyClipVol);
 				}
 
-				this.viewer.renderer.domElement.removeEventListener("mouseup", insertionCallback, true);
+				this.viewer.renderer.domElement.removeEventListener("mouseup", insertionCallback, false);
 				this.viewer.removeEventListener("cancel_insertions", cancel.callback);
 				this.viewer.inputHandler.enabled = true;
 			};
 			
 			this.viewer.addEventListener("cancel_insertions", cancel.callback);
-			this.viewer.renderer.domElement.addEventListener("mouseup", insertionCallback , true);
+			this.viewer.renderer.domElement.addEventListener("mouseup", insertionCallback , false);
 			this.viewer.inputHandler.enabled = false;
 			
 			polyClipVol.addMarker();
@@ -68504,13 +68660,13 @@ void main() {
 				if (cancel.removeLastMarker) {
 					measure.removeMarker(measure.points.length - 1);
 				}
-				domElement.removeEventListener('mouseup', insertionCallback, true);
+				domElement.removeEventListener('mouseup', insertionCallback, false);
 				this.viewer.removeEventListener('cancel_insertions', cancel.callback);
 			};
 
 			if (measure.maxMarkers > 1) {
 				this.viewer.addEventListener('cancel_insertions', cancel.callback);
-				domElement.addEventListener('mouseup', insertionCallback, true);
+				domElement.addEventListener('mouseup', insertionCallback, false);
 			}
 
 			measure.addMarker(new Vector3(0, 0, 0));
@@ -68895,12 +69051,12 @@ void main() {
 
 			cancel.callback = e => {
 				profile.removeMarker(profile.points.length - 1);
-				domElement.removeEventListener('mouseup', insertionCallback, true);
+				domElement.removeEventListener('mouseup', insertionCallback, false);
 				this.viewer.removeEventListener('cancel_insertions', cancel.callback);
 			};
 
 			this.viewer.addEventListener('cancel_insertions', cancel.callback);
-			domElement.addEventListener('mouseup', insertionCallback, true);
+			domElement.addEventListener('mouseup', insertionCallback, false);
 
 			profile.addMarker(new Vector3(0, 0, 0));
 			this.viewer.inputHandler.startDragging(
@@ -70877,6 +71033,7 @@ void main() {
 					depthMaterial.clipMethod = material.clipMethod;
 					depthMaterial.setClipBoxes(material.clipBoxes);
 					depthMaterial.setClipPolygons(material.clipPolygons);
+					depthMaterial.cropVertices = material.cropVertices;
 
 					pointcloud.material = depthMaterial;
 				}
@@ -70944,6 +71101,7 @@ void main() {
 					attributeMaterial.clipMethod = material.clipMethod;
 					attributeMaterial.setClipBoxes(material.clipBoxes);
 					attributeMaterial.setClipPolygons(material.clipPolygons);
+					attributeMaterial.cropVertices = material.cropVertices;
 
 					pointcloud.material = attributeMaterial;
 				}
@@ -71452,7 +71610,7 @@ void main() {
 		};
 
 		removeCameraAnimation(animation){
-			let index = this.cameraAnimations.indexOf(volume);
+			let index = this.cameraAnimations.indexOf(animation);
 			if (index > -1) {
 				this.cameraAnimations.splice(index, 1);
 
@@ -71979,7 +72137,7 @@ void main() {
 					let coordinates = feature.getGeometry().getCoordinates();
 					let p = this.map.getPixelFromCoordinate(coordinates);
 
-					this.elTooltip.html(annotation.title);
+					this.elTooltip.text(annotation.title);
 					this.elTooltip.css('display', '');
 					this.elTooltip.css('left', `${p[0]}px`);
 					this.elTooltip.css('top', `${p[1]}px`);
@@ -72474,6 +72632,8 @@ void main() {
 				});
 
 			let headerValues = [];
+			const skipFields = ["intensity", "return number", "number of returns", "source id", "gpsTime"];
+
 			for (let attribute of attributes) {
 				let itemSize = points.data[attribute].length / points.numPoints;
 
@@ -72485,24 +72645,28 @@ void main() {
 					for (let i = 0; i < itemSize; i++) {
 						headerValues.push(`${attribute}_${i}`);
 					}
-				} else {
+				} else if (skipFields.indexOf(attribute) === -1){
 					headerValues.push(attribute);
 				}
 			}
-			string = headerValues.join(', ') + '\n';
+			string = headerValues.join(',') + '\n';
 
 			for (let i = 0; i < points.numPoints; i++) {
 				let values = [];
 
 				for (let attribute of attributes) {
+					if (skipFields.indexOf(attribute) !== -1) continue;
 					let itemSize = points.data[attribute].length / points.numPoints;
 					let value = points.data[attribute]
 						.subarray(itemSize * i, itemSize * i + itemSize)
 						.join(', ');
+					if (attribute === "mileage"){
+						value = value / window.viewer.lengthUnit.unitspermeter * window.viewer.lengthUnitDisplay.unitspermeter;
+					}
 					values.push(value);
 				}
 
-				string += values.join(', ') + '\n';
+				string += values.join(',') + '\n';
 			}
 
 			return string;
@@ -73021,24 +73185,20 @@ void main() {
 								transform = value => value / scale + offset;
 							}
 
-							
-
-							
-
 							if (attributeName === 'position') {
-								let values = [...position].map(v => Utils.addCommas(v.toFixed(3)));
+								let values = [...position];
 								html += `
 								<tr>
 									<td>x</td>
-									<td>${values[0]}</td>
+									<td>${Utils.addCommas(values[0].toFixed(3))}</td>
 								</tr>
 								<tr>
 									<td>y</td>
-									<td>${values[1]}</td>
+									<td>${Utils.addCommas(values[1].toFixed(3))}</td>
 								</tr>
 								<tr>
 									<td>z</td>
-									<td>${values[2]}</td>
+									<td>${Utils.addCommas((values[2] / this.viewer.lengthUnit.unitspermeter * this.viewer.lengthUnitDisplay.unitspermeter).toFixed(3))}</td>
 								</tr>`;
 							} else if (attributeName === 'rgba') {
 								html += `
@@ -73052,12 +73212,12 @@ void main() {
 								html += `
 								<tr>
 									<td>${attributeName}</td>
-									<td>${value.toFixed(3)}</td>
+									<td>${(value / this.viewer.lengthUnit.unitspermeter * this.viewer.lengthUnitDisplay.unitspermeter).toFixed(3)}</td>
 								</tr>`;
-							} else {
+							} else if (attributeName === "classification") {
 								html += `
 								<tr>
-									<td>${attributeName}</td>
+									<td style="padding-right: 4px">${attributeName}</td>
 									<td>${transform(value)}</td>
 								</tr>`;
 							}
@@ -73134,6 +73294,7 @@ void main() {
 						let trueElevationPosition = new Float32Array(originPos);
 						for(let i = 0; i < pointSet.numPoints; i++){
 							trueElevationPosition[3 * i + 2] += pointcloud.position.z;
+							trueElevationPosition[3 * i + 2] = trueElevationPosition[3 * i + 2] / this.viewer.lengthUnit.unitspermeter * this.viewer.lengthUnitDisplay.unitspermeter;
 						}
 
 						pointSet.data.position = trueElevationPosition;
@@ -73336,6 +73497,7 @@ void main() {
 				.orient('bottom')
 				.innerTickSize(-height)
 				.outerTickSize(1)
+				.tickFormat(v => (v / this.viewer.lengthUnit.unitspermeter * this.viewer.lengthUnitDisplay.unitspermeter).toFixed(0))
 				.tickPadding(10)
 				.ticks(width / 50);
 
@@ -73345,6 +73507,7 @@ void main() {
 				.innerTickSize(-width)
 				.outerTickSize(1)
 				.tickPadding(10)
+				.tickFormat(v => (v / this.viewer.lengthUnit.unitspermeter * this.viewer.lengthUnitDisplay.unitspermeter).toFixed(0))
 				.ticks(height / 20);
 
 			this.elXAxis = this.svg.append('g')
@@ -73471,7 +73634,7 @@ void main() {
 				.range([0, width]);
 			this.scaleY.domain([this.camera.bottom + this.camera.position.z, this.camera.top + this.camera.position.z])
 				.range([height, 0]);
-
+			
 			let marginLeft = this.renderArea[0].offsetLeft;
 
 			this.xAxis.scale(this.scaleX)
@@ -74081,13 +74244,13 @@ ENDSEC
 			for (let point of points) {
 				let x = Utils.addCommas(point.x.toFixed(3));
 				let y = Utils.addCommas(point.y.toFixed(3));
-				let z = Utils.addCommas(point.z.toFixed(3));
+				let z = Utils.addCommas((point.z / this.viewer.lengthUnit.unitspermeter * this.viewer.lengthUnitDisplay.unitspermeter).toFixed(3));
 
 				let row = $(`
 				<tr>
 					<td><span>${x}</span></td>
 					<td><span>${y}</span></td>
-					<td><span>${z}</span></td>
+					<td><span data-dyn-value="${point.z}">${z}</span></td>
 					<td align="right" style="width: 25%">
 						<img name="copy" title="copy" class="button-icon" src="${copyIconPath}" style="width: 16px; height: 16px"/>
 					</td>
@@ -74316,7 +74479,10 @@ ENDSEC
 			elCoordiantesContainer.append(this.createCoordinatesTable(this.measurement.points.map(p => p.position)));
 
 			let elArea = this.elContent.find(`#measurement_area`);
-			elArea.html(this.measurement.getArea().toFixed(3));
+			let area = this.measurement.getArea();
+			elArea.html((area / (this.viewer.lengthUnit.unitspermeter * this.viewer.lengthUnit.unitspermeter) * (this.viewer.lengthUnitDisplay.unitspermeter * this.viewer.lengthUnitDisplay.unitspermeter)).toFixed(3));
+			elArea.attr('data-dyn-value', area);
+			elArea.attr('data-dyn-type', 'area');			
 		}
 	};
 
@@ -74441,10 +74607,13 @@ ENDSEC
 				return Potree.Utils.addCommas(number.toFixed(3));
 			};
 
+			const convFactor = (1.0 / this.viewer.lengthUnit.unitspermeter) * this.viewer.lengthUnitDisplay.unitspermeter;
+
 			
-			const txtCenter = `${format(center.x)} ${format(center.y)} ${format(center.z)}`;
-			const txtRadius = format(radius);
-			const txtCircumference = format(circumference);
+			const txtXYCenter = `${format(center.x)} ${format(center.y)}`;
+			const txtZCenter = format(center.z * convFactor);
+			const txtRadius = format(radius * convFactor);
+			const txtCircumference = format(circumference * convFactor);
 
 			const thStyle = `style="text-align: left"`;
 			const tdStyle = `style="width: 100%; padding: 5px;"`;
@@ -74456,16 +74625,16 @@ ENDSEC
 			</tr>
 			<tr>
 				<td ${tdStyle} colspan="2">
-					${txtCenter}
+					<span>${txtXYCenter}</span> <span data-dyn-value="${center.z}">${txtZCenter}</span>
 				</td>
 			</tr>
 			<tr>
 				<th ${thStyle}>Radius: </th>
-				<td ${tdStyle}>${txtRadius}</td>
+				<td ${tdStyle} data-dyn-value="${radius}">${txtRadius}</td>
 			</tr>
 			<tr>
 				<th ${thStyle}>Circumference: </th>
-				<td ${tdStyle}>${txtCircumference}</td>
+				<td ${tdStyle} data-dyn-value="${circumference}">${txtCircumference}</td>
 			</tr>
 		`);
 		}
@@ -74480,7 +74649,7 @@ ENDSEC
 			<div class="measurement_content selectable">
 				<span class="coordinates_table_container"></span>
 				<br>
-				<span id="height_label">Height: </span><br>
+				<b>Height:</b> <span id="height_label"></span><br>
 
 				<!-- ACTIONS -->
 				<div style="display: flex; margin-top: 12px">
@@ -74517,10 +74686,11 @@ ENDSEC
 				let min = lowPoint.z;
 				let max = highPoint.z;
 				let height = max - min;
-				height = height.toFixed(3);
+				let displayHeight = height / this.viewer.lengthUnit.unitspermeter * this.viewer.lengthUnitDisplay.unitspermeter;
 
 				this.elHeightLabel = this.elContent.find(`#height_label`);
-				this.elHeightLabel.html(`<b>Height:</b> ${height}`);
+				this.elHeightLabel.text(`${displayHeight.toFixed(3)}`);
+				this.elHeightLabel.attr('data-dyn-value', height);
 			}
 		}
 	};
@@ -74929,7 +75099,7 @@ ENDSEC
 
 				<br>
 
-				<input type="button" id="show_2d_profile" value="show 2d profile" style="width: 100%"/>
+				<input type="button" id="show_2d_profile" value="Show 2D Profile" style="width: 100%"/>
 
 				<!-- ACTIONS -->
 				<div style="display: flex; margin-top: 12px">
@@ -75315,7 +75485,9 @@ ENDSEC
 						Can be multiple lines long. TODO: the user should be able
 						to modify title and description. 
 				</div>
-
+				
+				<div class="heading">Link</div>
+				<div id="annotation_link" contenteditable="true"></div>
 			</div>
 
 		</div>
@@ -75332,18 +75504,25 @@ ENDSEC
 						{duration: 3000});
 			});
 
-			this.elTitle = this.elContent.find("#annotation_title").html(annotation.title);
-			this.elDescription = this.elContent.find("#annotation_description").html(annotation.description);
+			this.elTitle = this.elContent.find("#annotation_title").text(annotation.title);
+			this.elDescription = this.elContent.find("#annotation_description").text(annotation.description);
+			this.elLink = this.elContent.find("#annotation_link").text(annotation.link);
+			
 
 			this.elTitle[0].addEventListener("input", () => {
-				const title = this.elTitle.html();
+				const title = this.elTitle.text();
 				annotation.title = title;
 
 			}, false);
 
 			this.elDescription[0].addEventListener("input", () => {
-				const description = this.elDescription.html();
+				const description = this.elDescription.text();
 				annotation.description = description;
+			}, false);
+
+			this.elLink[0].addEventListener("input", () => {
+				const link = this.elLink.text();
+				annotation.link = link;
 			}, false);
 
 			this.update();
@@ -75357,10 +75536,8 @@ ENDSEC
 			elContent.find("#annotation_position_y").html(pos[1]);
 			elContent.find("#annotation_position_z").html(pos[2]);
 
-			elTitle.html(annotation.title);
-			elDescription.html(annotation.description);
-
-
+			elTitle.text(annotation.title);
+			elDescription.text(annotation.description);
 		}
 	};
 
@@ -75384,6 +75561,7 @@ ENDSEC
 					<span>Time: </span><span id="lblTime"></span> <div id="sldTime"></div>
 
 					<input name="play" type="button" value="play"/>
+					<input name="record" type="button" value="record movie"/>
 				</span>
 			</div>
 		`);
@@ -75391,6 +75569,52 @@ ENDSEC
 			const elPlay = this.elContent.find("input[name=play]");
 			elPlay.click( () => {
 				animation.play();
+			});
+
+			function record(canvas, time) {
+				var recordedChunks = [];
+				return new Promise(function (res, rej) {
+					var stream = canvas.captureStream(29.97 /*fps*/);
+					let mediaRecorder = new MediaRecorder(stream, {
+						mimeType: "video/webm; codecs=vp8"
+					});
+					
+					//ondataavailable will fire in interval of `time || 4000 ms`
+					mediaRecorder.start(time || 4000);
+			
+					mediaRecorder.ondataavailable = function (event) {
+						recordedChunks.push(event.data);
+						 // after stop `dataavilable` event run one more time
+						if (mediaRecorder.state === 'recording') {
+							mediaRecorder.stop();
+						}
+			
+					}
+			
+					mediaRecorder.onstop = function (event) {
+						var blob = new Blob(recordedChunks, {type: "video/webm" });
+						var url = URL.createObjectURL(blob);
+						res(url);
+					}
+				})
+			}
+
+			const elRecord = this.elContent.find("input[name=record]");
+			elRecord.click( () => {
+				const t = parseFloat(elDuration.val()) * 1000 + 1000;
+				this.viewer.toggleSidebar();
+				animation.setVisible(false);
+				setTimeout(() => {
+					animation.play();
+					record(this.viewer.renderer.domElement, t).then(url => {
+						let link = document.createElement('a');
+						link.setAttribute('href', url);
+						link.setAttribute('download', 'recording.webm');
+						link.click();
+						this.viewer.toggleSidebar();
+						animation.setVisible(true);
+					});
+				}, 1000);
 			});
 
 			const elSlider = this.elContent.find('#sldTime');
@@ -79083,7 +79307,7 @@ ENDSEC
 				Potree.resourcePath + '/icons/angle.png',
 				'[title]tt.angle_measurement',
 				() => {
-					$('#menu_measurements').next().slideDown();
+					$('#menu_measurements').next().show();
 					let measurement = this.measuringTool.startInsertion({
 						showDistances: false,
 						showAngles: true,
@@ -79104,7 +79328,7 @@ ENDSEC
 				Potree.resourcePath + '/icons/point.svg',
 				'[title]tt.point_measurement',
 				() => {
-					$('#menu_measurements').next().slideDown();
+					$('#menu_measurements').next().show();
 					let measurement = this.measuringTool.startInsertion({
 						showDistances: false,
 						showAngles: false,
@@ -79126,7 +79350,7 @@ ENDSEC
 				Potree.resourcePath + '/icons/distance.svg',
 				'[title]tt.distance_measurement',
 				() => {
-					$('#menu_measurements').next().slideDown();
+					$('#menu_measurements').next().show();
 					let measurement = this.measuringTool.startInsertion({
 						showDistances: true,
 						showArea: false,
@@ -79145,7 +79369,7 @@ ENDSEC
 				Potree.resourcePath + '/icons/height.svg',
 				'[title]tt.height_measurement',
 				() => {
-					$('#menu_measurements').next().slideDown();
+					$('#menu_measurements').next().show();
 					let measurement = this.measuringTool.startInsertion({
 						showDistances: false,
 						showHeight: true,
@@ -79166,7 +79390,7 @@ ENDSEC
 				Potree.resourcePath + '/icons/circle.svg',
 				'[title]tt.circle_measurement',
 				() => {
-					$('#menu_measurements').next().slideDown();
+					$('#menu_measurements').next().show();
 					let measurement = this.measuringTool.startInsertion({
 						showDistances: false,
 						showHeight: false,
@@ -79189,7 +79413,7 @@ ENDSEC
 				Potree.resourcePath + '/icons/azimuth.svg',
 				'Azimuth',
 				() => {
-					$('#menu_measurements').next().slideDown();
+					$('#menu_measurements').next().show();
 					let measurement = this.measuringTool.startInsertion({
 						showDistances: false,
 						showHeight: false,
@@ -79213,7 +79437,7 @@ ENDSEC
 				Potree.resourcePath + '/icons/area.svg',
 				'[title]tt.area_measurement',
 				() => {
-					$('#menu_measurements').next().slideDown();
+					$('#menu_measurements').next().show();
 					let measurement = this.measuringTool.startInsertion({
 						showDistances: true,
 						showArea: true,
@@ -79260,7 +79484,7 @@ ENDSEC
 				Potree.resourcePath + '/icons/profile.svg',
 				'[title]tt.height_profile',
 				() => {
-					$('#menu_measurements').next().slideDown(); ;
+					$('#menu_measurements').next().show(); ;
 					let profile = this.profileTool.startInsertion();
 
 					let measurementsRoot = $("#jstree_scene").jstree().get_json("measurements");
@@ -79275,7 +79499,7 @@ ENDSEC
 				Potree.resourcePath + '/icons/annotation.svg',
 				'[title]tt.annotation',
 				() => {
-					$('#menu_measurements').next().slideDown(); ;
+					$('#menu_measurements').next().show(); ;
 					let annotation = this.viewer.annotationTool.startInsertion();
 
 					let annotationsRoot = $("#jstree_scene").jstree().get_json("annotations");
@@ -79291,6 +79515,7 @@ ENDSEC
 				'[title]tt.remove_all_measurement',
 				() => {
 					this.viewer.scene.removeAllMeasurements();
+					this.viewer.scene.annotations.removeAllChildren();
 				}
 			));
 
@@ -79553,6 +79778,11 @@ ENDSEC
 
 				if(object){
 					object.visible = false;
+				}else {
+					// Root node: uncheck all children
+					data.node.children.forEach(childId => {
+						tree.jstree('uncheck_node', childId);
+					});
 				}
 			});
 
@@ -79561,6 +79791,11 @@ ENDSEC
 
 				if(object){
 					object.visible = true;
+				}else {
+					// Root node: check all children
+					data.node.children.forEach(childId => {
+						tree.jstree('check_node', childId);
+					});
 				}
 			});
 
@@ -79605,19 +79840,30 @@ ENDSEC
 				createNode(measurementID, profile.name, icon, profile);
 			};
 
+			let escapeHTML = (str) => {
+				return str.replace(/[&<>"']/g, function(m) {
+					return {
+					'&': '&amp;',
+					'<': '&lt;',
+					'>': '&gt;',
+					'"': '&quot;',
+					"'": '&#39;'
+					}[m];
+				});
+			};
+
 			let onAnnotationAdded = (e) => {
 				let annotation = e.annotation;
 
 				let annotationIcon = `${Potree.resourcePath}/icons/annotation.svg`;
 				let parentID = this.annotationMapping.get(annotation.parent);
-				let annotationID = createNode(parentID, annotation.title, annotationIcon, annotation);
+				let annotationID = createNode(parentID, escapeHTML(annotation.title), annotationIcon, annotation);
 				this.annotationMapping.set(annotation, annotationID);
 
 				annotation.addEventListener("annotation_changed", (e) => {
 					let annotationsRoot = $("#jstree_scene").jstree().get_json("annotations");
 					let jsonNode = annotationsRoot.children.find(child => child.data.uuid === annotation.uuid);
-					
-					$.jstree.reference(jsonNode.id).rename_node(jsonNode.id, annotation.title);
+					$.jstree.reference(jsonNode.id).rename_node(jsonNode.id, escapeHTML(annotation.title));
 				});
 			};
 
@@ -79719,10 +79965,18 @@ ENDSEC
 				tree.jstree("delete_node", jsonNode.id);
 			};
 
+			let oCameraAnimationRemoved = (e) => {
+				let otherRoot = $("#jstree_scene").jstree().get_json("other");
+				let jsonNode = otherRoot.children.find(child => child.data.uuid === e.animation.uuid);
+				
+				tree.jstree("delete_node", jsonNode.id);
+			};
+
 			this.viewer.scene.addEventListener("measurement_removed", onMeasurementRemoved);
 			this.viewer.scene.addEventListener("volume_removed", onVolumeRemoved);
 			this.viewer.scene.addEventListener("polygon_clip_volume_removed", onPolygonClipVolumeRemoved);
 			this.viewer.scene.addEventListener("profile_removed", onProfileRemoved);
+			this.viewer.scene.addEventListener("camera_animation_removed", oCameraAnimationRemoved);
 
 			{
 				let annotationIcon = `${Potree.resourcePath}/icons/annotation.svg`;
@@ -80245,7 +80499,7 @@ ENDSEC
 				content.hide();
 
 				header.click(() => {
-					content.slideToggle();
+					content.toggle();
 				});
 			});
 
@@ -80444,6 +80698,17 @@ ENDSEC
 				}
 			));
 
+			elNavigation.append(this.createToolIcon(
+				Potree.resourcePath + '/icons/reset_tools.svg',
+				'[title]tt.remove_last_camera_animation',
+				() => {
+					if (viewer.scene.cameraAnimations.length > 0){
+						let a = viewer.scene.cameraAnimations[viewer.scene.cameraAnimations.length - 1];
+						viewer.scene.removeCameraAnimation(a);
+						a.setVisible(false);
+					}
+				}
+			));
 
 			elNavigation.append("<br>");
 
@@ -88545,6 +88810,9 @@ ENDSEC
 				case 'ft':
 					this.lengthUnit = LengthUnits.FEET;
 					break;
+				case 'ft (US)':
+					this.lengthUnit = LengthUnits.FEET_US;
+					break;
 				case 'in':
 					this.lengthUnit = LengthUnits.INCH;
 					break;
@@ -88557,12 +88825,35 @@ ENDSEC
 				case 'ft':
 					this.lengthUnitDisplay = LengthUnits.FEET;
 					break;
+				case 'ft (US)':
+					this.lengthUnitDisplay = LengthUnits.FEET_US;
+					break;
 				case 'in':
 					this.lengthUnitDisplay = LengthUnits.INCH;
 					break;
 			}
 
 			this.dispatchEvent({ 'type': 'length_unit_changed', 'viewer': this, value: lengthUnitValue });
+			
+			let self = this;
+			$('#potree_sidebar_container [data-dyn-value]').each(function(){
+				const $el = $(this);
+				const dynValue = parseFloat($el.attr('data-dyn-value'));
+				if (isNaN(dynValue)) return;
+
+				const dynType = $el.attr('data-dyn-type');
+				
+				let lu = self.lengthUnit.unitspermeter;
+				let lud =  self.lengthUnitDisplay.unitspermeter;
+
+				// Update the unit text based on the new display unit
+				if (dynType === 'area') {
+					lud *= lud;
+					lu *= lu;
+				}
+
+				$el.text((dynValue / lu * lud).toFixed(3));
+			});
 		};
 
 		zoomTo(node, factor, animationDuration = 0){
@@ -89206,7 +89497,7 @@ ENDSEC
 
 			let canvas = document.createElement("canvas");
 
-			let context = canvas.getContext('webgl', contextAttributes );
+			let context = canvas.getContext('webgl2', contextAttributes );
 
 			this.renderer = new WebGLRenderer({
 				alpha: true, 

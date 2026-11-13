@@ -5,6 +5,11 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'webodm.settings')
 
 app = Celery('tasks')
 app.config_from_object('django.conf:settings', namespace='CELERY')
+app.conf.result_backend_transport_options = {
+    'retry_policy': {
+       'timeout': 5.0
+    }
+}
 
 app.conf.beat_schedule = {
     'update-nodes-info': {
@@ -23,11 +28,27 @@ app.conf.beat_schedule = {
         	'retry': False
         }
     },
+    'cleanup-tasks': {
+        'task': 'worker.tasks.cleanup_tasks',
+        'schedule': 3600,
+        'options': {
+            'expires': 1799,
+            'retry': False
+        }
+    },
     'cleanup-tmp-directory': {
         'task': 'worker.tasks.cleanup_tmp_directory',
         'schedule': 3600,
         'options': {
             'expires': 1799,
+            'retry': False
+        }
+    },
+    'cleanup-cache-directory': {
+        'task': 'worker.tasks.cleanup_cache_directory',
+        'schedule': 21600,
+        'options': {
+            'expires': 10799,
             'retry': False
         }
     },
@@ -39,12 +60,22 @@ app.conf.beat_schedule = {
         	'retry': False
         }
     },
+    'check-quotas': {
+        'task': 'worker.tasks.check_quotas',
+        'schedule': 3600,
+        'options': {
+        	'expires': 1799,
+        	'retry': False
+        }
+    },
 }
 
-# Mock class for handling async results during testing
+# Mock classes for handling async results during testing
 class MockAsyncResult:
     def __init__(self, celery_task_id, result = None):
         self.celery_task_id = celery_task_id
+        self.state = "PENDING"
+
         if result is None:
             if celery_task_id == 'bogus':
                 self.result = None
@@ -60,8 +91,14 @@ class MockAsyncResult:
     def ready(self):
         return self.result is not None
 
+class MockAsyncBackend:
+    def store_result(self, celery_task_id, result, *args, **kwargs):
+        if result is not None:
+            MockAsyncResult.results[celery_task_id] = result
+        
 MockAsyncResult.results = {}
 MockAsyncResult.set = lambda cti, r: MockAsyncResult(cti, r)
+MockAsyncResult.backend = MockAsyncBackend()
 
 if __name__ == '__main__':
     app.start()

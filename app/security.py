@@ -1,5 +1,6 @@
 from django.core.exceptions import SuspiciousFileOperation
 import os
+import re
 
 def path_traversal_check(unsafe_path, known_safe_path):
     known_safe_path = os.path.abspath(known_safe_path)
@@ -10,3 +11,11 @@ def path_traversal_check(unsafe_path, known_safe_path):
 
     # Passes the check
     return unsafe_path
+
+
+def sanitize_filename(filename):
+    filename = filename.replace('/', '').replace('\\', '')
+    name, ext = os.path.splitext(filename)
+    name = re.sub(r'[^\w\s.\-]', '', name).strip().strip('.')
+    ext = re.sub(r'[^\w.]', '', ext)
+    return name + ext

@@ -3,7 +3,7 @@ worker_processes 1;
 # Change this if running outside docker!
 user root root;
 pid /tmp/nginx.pid;
-error_log /tmp/nginx.error.log;
+error_log /dev/null;
 
 events {
   worker_connections 1024; # increase if you have lots of clients
@@ -16,7 +16,8 @@ http {
 
   # fallback in case we can't determine a type
   default_type application/octet-stream;
-  access_log /tmp/nginx.access.log combined;
+  log_format webodm_log '$remote_addr - [$time_local] "$request" $status';
+  access_log /var/log/nginx/access.log webodm_log;
   sendfile on;
 
   upstream app_server {
@@ -35,16 +36,27 @@ http {
   }
 
   server {
-    listen 8000 deferred;
+    listen 8000 ssl deferred;
+    listen [::]:8000 ssl deferred;
+
+    listen 8000 quic reuseport;
+    listen [::]:8000 quic reuseport;
+
+    http2 on;
+    http3 on;
+
     client_max_body_size 0;
 
     server_name $WO_HOST;
 
-    ssl on;
     ssl_certificate /webodm/nginx/ssl/cert.pem;
     ssl_certificate_key /webodm/nginx/ssl/key.pem;
 
-    keepalive_timeout 5;
+    # advertise HTTP/3
+    add_header Alt-Svc 'h3=":$WO_PORT"; ma=86400' always;
+    http3_stream_buffer_size 1m;
+
+    keepalive_timeout 15;
 
     proxy_connect_timeout 60s;
     proxy_read_timeout 300000s;
@@ -64,15 +76,36 @@ http {
     }
 
     location / {
+      proxy_http_version 1.1;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 
       # enable this if and only if you use HTTPS
       proxy_set_header X-Forwarded-Proto https;
-      proxy_set_header Host $http_host;
+      proxy_set_header Host $host;
 
       # we don't want nginx trying to do something clever with
       # redirects, we set the Host: header above already.
       proxy_redirect off;
+
+      proxy_pass http://app_server;
+    }
+
+    # Same as above, but adds proxy_buffering off
+    location ~* (download/.*\.zip|backup)$ {
+      proxy_http_version 1.1;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+      # enable this if and only if you use HTTPS
+      # proxy_set_header X-Forwarded-Proto https;
+      proxy_set_header Host $host;
+
+      # we don't want nginx trying to do something clever with
+      # redirects, we set the Host: header above already.
+      proxy_redirect off;
+
+      # For streaming requests
+      proxy_buffering off;
+
       proxy_pass http://app_server;
     }
   }

@@ -1,23 +1,23 @@
 from __future__ import unicode_literals
 
 from django.db import models
-from django.contrib.postgres import fields
 from django.utils import timezone
 from django.dispatch import receiver
 from guardian.models import GroupObjectPermissionBase
 from guardian.models import UserObjectPermissionBase
+from guardian.shortcuts import get_objects_for_user
 from django.utils.translation import gettext_lazy as _
 
 from webodm import settings
 
 import json
-from pyodm import Node
-from pyodm import exceptions
+from pyodx import Node
+from pyodx import exceptions
 from django.db.models import signals
 from datetime import timedelta
+import logging
 
-
-OFFLINE_MINUTES = 5 # Number of minutes a node hasn't been seen before it should be considered offline
+logger = logging.getLogger('app.logger')
 
 class ProcessingNode(models.Model):
     hostname = models.CharField(verbose_name=_("Hostname"), max_length=255, help_text=_("Hostname or IP address where the node is located (can be an internal hostname as well). If you are using Docker, this is never 127.0.0.1 or localhost. Find the IP address of your host machine by running ifconfig on Linux or by checking your network settings."))
@@ -25,7 +25,7 @@ class ProcessingNode(models.Model):
     api_version = models.CharField(verbose_name=_("API Version"), max_length=32, null=True, help_text=_("API version used by the node"))
     last_refreshed = models.DateTimeField(verbose_name=_("Last Refreshed"), null=True, help_text=_("When was the information about this node last retrieved?"))
     queue_count = models.PositiveIntegerField(verbose_name=_("Queue Count"), default=0, help_text=_("Number of tasks currently being processed by this node (as reported by the node itself)"))
-    available_options = fields.JSONField(verbose_name=_("Available Options"), default=dict, help_text=_("Description of the options that can be used for processing"))
+    available_options = models.JSONField(verbose_name=_("Available Options"), default=dict, help_text=_("Description of the options that can be used for processing"))
     token = models.CharField(verbose_name=_("Token"), max_length=1024, blank=True, default="", help_text=_("Token to use for authentication. If the node doesn't have authentication, you can leave this field blank."))
     max_images = models.PositiveIntegerField(verbose_name=_("Max Images"), help_text=_("Maximum number of images accepted by this node."), blank=True, null=True)
     engine_version = models.CharField(verbose_name=_("Engine Version"), max_length=32, null=True, help_text=_("Engine version used by the node."))
@@ -43,23 +43,34 @@ class ProcessingNode(models.Model):
             return '{}:{}'.format(self.hostname, self.port)
 
     @staticmethod
-    def find_best_available_node():
+    def find_best_available_node(user = None):
         """
         Attempts to find an available node (seen in the last 5 minutes, and with lowest queue count)
         :return: ProcessingNode | None
         """
-        return ProcessingNode.objects.filter(last_refreshed__gte=timezone.now() - timedelta(minutes=OFFLINE_MINUTES)) \
-                                     .order_by('queue_count').first()
+        if user is not None:
+            nodes = get_objects_for_user(user, 'view_processingnode', ProcessingNode, accept_global_perms=False)
+        else:
+            nodes = ProcessingNode.objects.all()
+
+        if not settings.NODE_OPTIMISTIC_MODE:
+            nodes = nodes.filter(last_refreshed__gte=timezone.now() - timedelta(minutes=settings.NODE_OFFLINE_MINUTES))
+        
+        return nodes.order_by('queue_count').first()
 
     def is_online(self):
-        return self.last_refreshed is not None and \
-               self.last_refreshed >= timezone.now() - timedelta(minutes=OFFLINE_MINUTES)
+        if settings.NODE_OPTIMISTIC_MODE:
+            return True
 
-    def update_node_info(self):
+        return self.last_refreshed is not None and \
+               self.last_refreshed >= timezone.now() - timedelta(minutes=settings.NODE_OFFLINE_MINUTES)
+
+    def update_node_info(self, save=True):
         """
         Retrieves information and options from the node API
         and saves it into the database.
 
+        :param save: whether to save the updated information into the database
         :returns: True if information could be updated, False otherwise
         """
         api_client = self.api_client(timeout=5)
@@ -68,16 +79,21 @@ class ProcessingNode(models.Model):
 
             self.api_version = info.version
             self.queue_count = info.task_queue_count
-            self.max_images = info.max_images
+
+            if isinstance(info.max_images, (int, float)):
+                self.max_images = max(0, info.max_images)
+            else:
+                self.max_images = None
             self.engine_version = info.engine_version
             self.engine = info.engine
 
             options = list(map(lambda o: o.__dict__, api_client.options()))
             self.available_options = options
             self.last_refreshed = timezone.now()
-            self.save()
+            if save:
+                self.save()
             return True
-        except exceptions.OdmError:
+        except exceptions.GenericError:
             return False
 
     def api_client(self, timeout=30):
@@ -116,13 +132,13 @@ class ProcessingNode(models.Model):
 
         :returns UUID of the newly created task
         """
-        if len(images) < 2: raise exceptions.NodeServerError("Need at least 2 images")
+        if len(images) < 1: raise exceptions.NodeServerError("Need at least 1 file")
 
         api_client = self.api_client()
 
         opts = self.options_list_to_dict(options)
 
-        task = api_client.create_task(images, opts, name, progress_callback)
+        task = api_client.create_task(images, opts, name, progress_callback, parallel_uploads=settings.NODE_CONNECTIONS)
         return task.uuid
 
     def get_task_info(self, uuid, with_output=None):
@@ -197,8 +213,10 @@ def auto_update_node_info(sender, instance, created, **kwargs):
     if created:
         try:
             instance.update_node_info()
-        except exceptions.OdmError:
+        except exceptions.GenericError:
             pass
+        except Exception as e:
+            logger.warning("auto_update_node_info: " + str(e))
 
 class ProcessingNodeUserObjectPermission(UserObjectPermissionBase):
     content_object = models.ForeignKey(ProcessingNode, on_delete=models.CASCADE)

@@ -1,7 +1,8 @@
 import $ from 'jquery';
 
 export default {
-    waitForCompletion: (celery_task_id, cb, checkUrl = "/api/workers/check/") => {
+    waitForCompletion: (celery_task_id, cb, progress_cb) => {
+        const checkUrl = "/api/workers/check/";
         let errorCount = 0;
         let url = checkUrl + celery_task_id;
 
@@ -15,13 +16,16 @@ export default {
               }else if (result.ready){
                 cb();
               }else{
+                if (typeof progress_cb === "function" && result.progress !== undefined && result.status !== undefined){
+                    progress_cb(result.status, result.progress);
+                }
                 // Retry
                 setTimeout(() => check(), 2000);
               }
           }).fail(error => {
               console.warn(error);
               if (errorCount++ < 10) setTimeout(() => check(), 2000);
-              else cb(JSON.stringify(error));
+              else cb(error.statusText);
           });
         };
     
@@ -39,8 +43,21 @@ export default {
             url: url
         }).done(result => {
             if (result.error) cb(result.error);
-            else if (result.output !== undefined) cb(null, result.output);
+            else if (result.output !== undefined) cb(null, result.output, result);
+            else if (result.link !== undefined) cb(null, result.link, result);
             else cb(new Error("Invalid response: " + JSON.stringify(result)));
+        }).fail(cb);
+    },
+
+    cancel: (celery_task_id, cb) => {
+        let url = "/api/workers/cancel/" + celery_task_id;
+        $.ajax(url, {
+            type: 'POST',
+        }).done(result => {
+            if (typeof cb === 'function'){
+                if (result.success) cb(null);
+                else cb(new Error("Cannot cancel task"));
+            }
         }).fail(cb);
     }
 };

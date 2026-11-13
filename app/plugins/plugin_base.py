@@ -41,7 +41,7 @@ class PluginBase(ABC):
                 if not os.path.exists(self.get_python_packages_path()):
                     os.makedirs(self.get_python_packages_path(), exist_ok=True)
 
-                p = subprocess.Popen(['pip', 'install', '-U', '-r', 'requirements.txt',
+                p = subprocess.Popen(['python', '-m', 'pip', 'install', '-U', '-r', 'requirements.txt',
                                   '--target', self.get_python_packages_path()],
                                      cwd=self.get_path())
                 p.wait()
@@ -56,6 +56,27 @@ class PluginBase(ABC):
                             f.write(req_md5)
                 else:
                     logger.warning("Failed to install requirements.txt for {}".format(self))
+
+    def enable(self):
+        """
+        Should be overriden by plugins to perform persistent setup and configuration
+        (e.g., registering static files, initializing databse entries, or hooking
+        into WebODM’s functionality). Called once, each time a plugin is enabled. If
+        this method throws an exception, it will not be enabled by the system.
+        :return: none
+        """
+        pass
+
+    def disable(self):
+        """
+        Should be overriden by plugins to perform cleanup or other persistent tasks
+        to restore the system to pre-enabled state (e.g., removing hooks, deleting
+        temporary data, or restoring system state). Called once each time a plugin
+        is disabled. If this method fails to complete or throws an exception, it will
+        still be disabled by the system.
+        :return: none
+        """
+        pass
 
     def get_persistent_path(self, *paths):
         return get_plugins_persistent_path(self.name, *paths)
@@ -132,12 +153,13 @@ class PluginBase(ABC):
         :return: path used to reference Django templates for a plugin
         """
         if self.is_persistent():
-            return "plugins/{}/templates/{}".format(self.get_name(), path)
+            return "coreplugins/{}/templates/{}".format(self.get_name(), path)
         else:
-            return "app/media/plugins/{}/templates/{}".format(self.get_name(), path)
+            return "plugins/{}/templates/{}".format(self.get_name(), path)
 
-    def path_exists(self, path):
-        return os.path.exists(self.get_path(path))
+
+    def path_exists(self, *path):
+        return os.path.exists(self.get_path(os.path.join(*path)))
 
     def include_js_files(self):
         """
@@ -164,6 +186,13 @@ class PluginBase(ABC):
         """
         return []
 
+    def requires_restart(self):
+        """
+        Whether the plugin requires an app restart to
+        function properly
+        """
+        return len(self.root_mount_points()) > 0
+
     def main_menu(self):
         """
         Should be overriden by plugins that want to add
@@ -171,6 +200,19 @@ class PluginBase(ABC):
         :return: [] of Menu objects
         """
         return []
+
+    def root_mount_points(self):
+        """
+        Should be overriden by plugins that want to 
+        add routes to the root view controller.
+        CAUTION: this should be used sparingly, as
+        routes could conflict with other plugins and
+        future versions of WebODM might break the routes.
+        It's recommended to use app_mount_points, unless
+        you know what you are doing.
+        :return: [] of MountPoint objects
+        """
+        return [] 
 
     def app_mount_points(self):
         """
